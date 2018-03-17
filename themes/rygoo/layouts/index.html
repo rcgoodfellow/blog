@@ -46,6 +46,13 @@
       <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
     </div>
     {{ end }}
+    <h2>Languages</h2>
+    {{ range .Site.Taxonomies.series.language }}
+    <div>
+      <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
+      <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
+    </div>
+    {{ end }}
     <h2>Differential-Algebraic Equations</h2>
     {{ range .Site.Taxonomies.series.dae }}
     <div>
