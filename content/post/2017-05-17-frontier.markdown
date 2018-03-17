@@ -1,0 +1,14 @@
+---
+title: "Toward a New Frontier for Dynamical Systems"
+date: 2017-05-17T18:00:00
+disqusid: 1951
+series: dae
+categories: Differential-Algebraic-Equations
+---
+
+### This post is just a few links from the talk I gave today at ISI.
+
+[The paper](http://mirror.deterlab.net/papers/preprints/model-you-an-energy-system.pdf) - It's a preprint work in progress!
+
+[Slides from the talk](https://docs.google.com/a/isi.edu/presentation/d/1ELurb-cpNrl-ADZti3wmbLJwsRxVWYYuYAzMaQQgqBc/edit?usp=sharing)
+

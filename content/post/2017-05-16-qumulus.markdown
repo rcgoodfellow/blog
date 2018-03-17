@@ -1,0 +1,294 @@
+---
+title: "Qumulus - Controlling VLANs on Cumulus with QBridge, AgentX and Netlink"
+date: 2017-05-16T18:00:00
+disqusid: 1948
+series: networking
+categories: Networking
+---
+
+Most TOR switches these days support using the [QBridge SNMP protocol](https://tools.ietf.org/html/rfc4363) to control VLANs. This is [half way true for Cumulus switches](https://docs.cumulusnetworks.com/display/DOCS/SNMP+Monitoring). There is support for fetching VLAN tables from the switch via QBridge, but no support for modifying them. This article presents the design and implementation of an [AgentX](https://tools.ietf.org/html/rfc2741) subagent written in Go that aims to provide full QBridge support for Cumulus through [Netlink](https://wiki.linuxfoundation.org/networking/netlink).
+
+## Design
+The component level design of the Cumulus QBridge controller is depicted below. Cumulus Linux comes stock with the [snmpd](http://net-snmp.sourceforge.net/docs/man/snmpd.html) agent running as a service. The q-agent operates as an extension to snmpd through the AgentX protocol. It registers itself with snmpd as an agent capable of handling the [QBridge subtree](http://www.mibdepot.com/cgi-bin/getmib4.cgi?abc=0&n=Q-BRIDGE-MIB&r=alcatel&f=IETF_Q_BRIDGE.mib&t=tree&v=v2&i=0&obj=VlanId), so when snmpd gets QBridge requests it will pass them along to the q-agent. The q-agent then implements VLAN control through the Linux Netlink communication mechanism. The switchd component is a part of Cumulus Linux. It snoops on the Netlink socket for commands such as the bridge VLAN commands we will show later and configures the switches' underlying packet processing [ASIC](https://en.wikipedia.org/wiki/Application-specific_integrated_circuit) accordingly.
+
+<img class="center-image" src="/img/anatomy.png" />
+
+## AgentX Implementation
+I built the [agx](https://github.com/rcgoodfellow/agx) library specifically for this project. There are already a few other AgentX libraries for Go out there. However, none of the ones I found seem to support setting variables, and most seem to be built with a relatively static devices in mind. agx is purposely designed to support managing highly dynamic devices. Both set and get operations are exposed through functional interfaces that allow code to be executed when GET or SET operations come through the pipes. 
+
+The full code for the q-bridge agent is [here](https://github.com/rcgoodfellow/agx/blob/master/qbridge/qbridge.go). Note that this code currently depends on [my fork](https://github.com/rcgoodfellow/netlink) of [vishvanada's popular Go Netlink library](https://github.com/vishvananda/netlink) that starts to implement some of the [iproute2](https://wiki.linuxfoundation.org/networking/iproute2) [bridge](http://man7.org/linux/man-pages/man8/bridge.8.html) functionality. I hope to contribute this code back upstream soon.
+
+### Subagent Registration
+
+The first part of being an AgentX subagent is registering with a master agent. This is accomplished as follows.
+
+```go
+const qbridge  = "1.3.6.1.2.1.17"
+id, descr := "1.2.3.4.7", "qbridge-agent"
+c, err := agx.Connect(&id, &descr)
+if err != nil {
+  log.Fatalf("connection failed %v", err)
+}
+defer c.Disconnect()
+
+err = c.Register(qbridge)
+if err != nil {
+  log.Fatalf("agent registration failed %v", err)
+}
+defer func() {
+  err = c.Unregister(qbridge)
+  if err != nil {
+    log.Fatalf("agent registration failed %v", err)
+  }
+}()
+
+```
+The master agent (snmpd in this case) will delegate requests for variables in the Q-BRIDGE to the q-bridge agent. Note that this is true even if snmpd already has a [pass persist](http://net-snmp.sourceforge.net/wiki/index.php/Tut:Extending_snmpd_using_shell_scripts) agent running for the subtree in question. For example, the stock Cumulus implementation already has a pass persist agent that provides read functionality for the QBridge variables. When the q-bridge agent registers with snmpd as a subagent, it essentially steals control of the subtree.
+
+### Handling Requests
+
+#### Get Requests
+There are two types of get-request handlers that can be implemented in agx; `Get` and `GetSubtree`. The former handles point requests for a specific variable and the latter handles request for entire subtrees  of variables.
+
+Here is an example of a `Get` handler.
+
+```go
+c.OnGet(qb_numvlans, func(oid agx.Subtree) agx.VarBind {
+
+  const qb_numvlans = "1.3.6.1.2.1.17.7.1.1.4.0"
+  table := generateVlanTable()
+  numvlans := uint32(len(table))
+  log.Printf("[qbridge][get] numvlans=%d", numvlans)
+  return agx.Gauge32VarBind(oid, numvlans)
+
+})
+```
+
+Variables in SNMP are defined using a generic data structure called a varbind. The definition of a varbind in Go is the following.
+
+```go
+type VarBind struct {
+	Type     int16
+	Reserved int16
+	Name     Subtree
+	Data     interface{}
+}
+```
+
+The value of `Type` determines what sort of data will go in `Data` and the `Name` is what we call an Object Identifier (OID). An example of an OID is the "1.3.6.1.2.1.17.7.1.1.4.0" above. OIDs create a hierarchical namespace. So the subtree "1.3.6.1" contains any OID with that prefix.
+
+The code in the get handler above is responsible for returning the number of VLANs resident on a switch. It does this by generating a VLAN table (the Netlink code to do that coming later) and returning the number of entries as a varbind containing a Guage32 (unsigned 32 bit integer).
+
+The `GetSubtree` handler is similar to the `Get` handler, but it is responsible for presiding over an entire subtree as opposed to a single variable. The signature of the handler includes an additional variable `next` to indicate the nature of the request. If `next == false` then the request is for the precise OID supplied to the function. Otherwise, the variable being requested is the first variable that would come after the provided OID. It is important to note that the OID supplied need not exist. This type of design is what allows variables to be discovered by clients dynamically.
+
+```go
+c.OnGetSubtree(qvs, func(oid agx.Subtree, next bool) agx.VarBind {
+
+  qtable = generateQVSTable()
+
+  if len(qtable) == 0 {
+    log.Printf("vlan table is empty")
+    return agx.EndOfMibViewVarBind(oid)
+  }
+
+  if oid.HasPrefix(*qvs_subtree) {
+    entry := findEntry(oid, next)
+    if entry == nil {
+      return agx.EndOfMibViewVarBind(oid)
+    } else {
+      return *entry
+    }
+  } else {
+    log.Printf("[qvs]top level requested - returning first vlan entry name")
+    return *qtable[0]
+  }
+
+})
+
+```
+
+#### Set Requests
+
+An example of a test-set request handler is shown below. A test set handler is responsible for testing whether or not the requested set operation is valid.
+
+```go
+c.OnTestSet(qvs, func(vb agx.VarBind, sessionId int) agx.TestSetResult {
+
+  log.Printf("[test-set] oid::%s session=%d", vb.Name.String(), sessionId)
+
+  table, vid, err := parseOid(vb.Name.String())
+
+  if table == qvs_egress_suffix {
+
+    log.Printf("[test-set] egress vid=%d", vid)
+    s, ok := vb.Data.(agx.OctetString)
+    err = setVlans(vid, s, false)
+
+  } 
+  // ... more logic ...
+
+  return agx.TestSetNoError
+})
+```
+Each test-set function is supplied a session id. This is so the subsequent set-commit and set-cleanup function calls can be correlated to a test-set operation and the associated varbind that was passed to it. The following snippets show the signatures for these functions.
+
+```go
+c.OnCommitSet(func(sessionId int) agx.CommitSetResult {
+
+  log.Printf("[commit-set] session=%d", sessionId)
+
+  return agx.CommitSetNoError
+
+})
+
+c.OnCleanupSet(func(sessionId int) {
+
+  log.Printf("[cleanup-set] session=%d", sessionId)
+
+})
+```
+
+## Netlink Controller Implementation
+
+### Observing the Linux Network Subsystems using Netlink
+
+The first thing q-agent needs Netlink for is generating a VLAN table to answer get requests. It does this using `netlink.GetBridgeInfo()` as can been seen from the code below. The basic idea if this code is to loop through all of the 'bridges', grab the VLANs associated with each bridge and flip the bridge to VLAN association on its head by building a table that is keyed per VLAN and contains multiple bridge structs per entry. I put bridge in quotes because the entries the bridge info table can also be regular physical device interfaces. This list just contains the bridging relevant properties of all links on a Linux system.
+
+```go
+func generateVlanTable() VlanTable {
+  bridges, _ := netlink.GetBridgeInfo()
+  table := make(VlanTable)
+  for _, bridge := range bridges {
+    for _, vlan := range bridge.Vlans {
+      vid := int(vlan.Vid)
+      entry, ok := table[vid]
+      if ok {
+        entry.Interfaces = append(
+          entry.Interfaces, bridge.Index)
+      } else {
+        table[vid] = &VlanTableEntry{
+          Vlan:       vlan,
+          Interfaces: []int{bridge.Index},
+        }
+      }
+    }
+  }
+  return table
+}
+```
+
+Before we go into the [Netlink code itself](https://github.com/rcgoodfellow/netlink/blob/master/bridge.go), let's cover some Netlink basics. Netlink is a communication mechanism for the Linux network subsystem. It allows for both disparate kernel modules to coordinate and for user code to coordinate with kernel modules for the purpose of driving the Linux networking subsystems. Communication over Netlink takes place via datagrams using socket interfaces. In this article we will be covering rtnetlink, whose name comes from 'routing table' Netlink, but rtnetlink it turns out is much broader than routing. We will be using rtnetlink to set Ethernet bridging and VLAN properties.
+
+The Rtnetlink packets we will be using look like the following. Each starts with a header that contains basic metadata about the message. The `ifinfomsg` contains specific details about the interface to which this packet pertains. For example is we are modifying and interface called `swp3` that has an index of 5 then the `ifi_index` would be set to 5. Note that an `ifinfomsg` packet is not required for all rtnetlink messages, but it is used in all of the messages we will be sending for the purposes of setting up VLANs on bridges. The rtnetlink packets then contain a series of attributes that have variable format data within them.
+
+```shell
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| nlmsghdr
+|                            nlmsg_len                          |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|          nlmsg_type           |         nlmsg_flags           |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                           nlmsg_seq                           |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                           nlmsg_pid                           |
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| ifinfomsg
+|  ifi_family   |    padding    |           ifi_type            |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                           ifi_index                           |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                           ifi_flags                           |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                           ifi_change                          |
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| rtattr 0
+|            rta_len            |           rta_type            |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                            rta_data                           |
+|                               .                               |
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| rtattr 1
+|            rta_len            |           rta_type            |
+|- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -|
+|                            rta_data                           |
+|                               .                               |
+|                               .                               |
+|                               .                               |
+|                               .                               |
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| rtattr 2
+.              .                .             .                 .
+.              .                .             .                 .
+.              .                .             .                 .
+.              .                .             .                 .
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =| rtattr n
+|            rta_len            |           rta_type            |
+|= = = = = = = = = = = = = = = = = = = = = = = = = = = = = = = =|
+```
+
+The length and format of an rtnetlink attribute are captured in the `rtattr` header.
+
+The following code shows how the Go Netlink library retrieves basic bridge information from the kernel via Netlink. The first thing we need to do is craft the basic header information for our Netlink packet.
+
+```go
+//craft our netlink request to get all the vlan info from all the bridges
+req := h.bridgeMsg(
+  syscall.RTM_GETLINK,
+  syscall.NLM_F_DUMP|syscall.NLM_F_REQUEST,
+  nl.NewIfInfomsg(syscall.AF_BRIDGE),
+)
+```
+This code sets up our type and flags for the `nlmsghdr`. `RTM_GETLINK` tells the kernel that we are requesting information about a link. TODO figure out exact meaning of `NLM_F_DUMP` and `NLM_F_REQUEST`. Here we are also setting the `ifinfomsg` in such a way that only bridged interfaces are considered through the `AF_BRIDGE` flag.
+
+Next we add our attributes. In this case we need a single attribute `RTEXT_FILTER_BRVLAN`. This is a Netlink extension attribute, it informs Netlink that we are interested in bridge VLANs. If we do not include this attribute hint, the kernel assumes that we are uninterested in this information and will not attempt to query or retrieve it.
+
+```go
+vlan_xt := attributeBuffer(4, nl.IFLA_EXT_MASK, uint32(RTEXT_FILTER_BRVLAN))
+req.AddRawData(vlan_xt)
+```
+
+Finally we call down into Netlink with two flags. The first flag `NETLINK_ROUTE` tells Netlink we are doing rtnetlink things. The second flag `RTM_NEWLINK` is a filter that says were are only interested in results of type newlink.
+
+```go
+//call down into netlink
+msgs, err := req.Execute(syscall.NETLINK_ROUTE, syscall.RTM_NEWLINK)
+```
+
+When we get the results back from Netlink they are still in wire format so we must deserialize them. This code is mostly minutia, check the [code](https://github.com/rcgoodfellow/netlink/blob/master/bridge.go) in git see it.
+
+### Controlling the Linux Network Subsystems using Netlink
+
+The example I will show here sets a VLAN VID on a bridged interface. [We start](https://github.com/rcgoodfellow/netlink/blob/master/bridge.go#L117) in almost the same way as before. Except here we are are specifying a specific interface through the `ifinfomsg`, and we apply a special flag `NLM_F_ACK` to the request. This flag tells Netlink that we would like our set request to be acknowledged. If this flag is not set whatever component in the kernel (the Ethernet bridging module in this case) is free to carry out the command with out sending a response. This is perfectly fine in some scenarios, however this code uses [netlink.nl.NetlinkRequest.Execute](https://godoc.org/github.com/vishvananda/netlink/nl#NetlinkRequest.Execute) to call down into Netlink, and this function expects a response from Netlink or it will block indefinitely on a read waiting for the response.
+
+```go
+//restrict the netlink set request to the bridge in question
+ifi := nl.NewIfInfomsg(syscall.AF_BRIDGE)
+ifi.Index = int32(dev_index)
+
+//build the netlink request
+req := h.bridgeMsg(
+  int(cmd),
+  syscall.NLM_F_REQUEST|syscall.NLM_F_ACK,
+  ifi,
+)
+```
+Building up the request to set the VLAN on the bridge interface is a matter of adding attributes to the Netlink message. In this case we need to add the attributes as _nested attributes_. Nested attributes start with an empty attribute (no data) that is of type `IFLA_AF_SPEC`. The length of the nested attribute is the combined length of the attributes that follow. In order to set a VID on a bridged interface, we need to send up to two attributes. The first is a bridge flags attribute, this sets things like the `self` and `master` attributes (see man [bridge(8)](http://man7.org/linux/man-pages/man8/bridge.8.html)). The bridge flags attribute is optional. The second attribute, which must be sent, is the `vlaninfo` attribute.
+
+```go
+type BridgeVlanInfo struct {
+	Flags uint16
+	Vid   uint16
+}
+```
+
+This attribute also has a flags attribute for things like specifying whether this VID is untagged or trunked (again see man [bridge(8)](http://man7.org/linux/man-pages/man8/bridge.8.html) for more details).
+
+Once we have packed up the bridge flags and VLAN flags into the Netlink message, and set the length of the nest attribute to the appropriate value we can call down into Netlink. One really nice thing is that this Netlink message works equally well for both adding and removing VLANs from a bridged interface.
+
+```go
+// to add the vlan
+req.Execute(syscall.RTM_SETLINK, 0)
+
+// to remove the vlan
+req.Execute(syscall.RTM_DELLINK, 0)
+```
+
+The [vlanModLink](https://github.com/rcgoodfellow/netlink/blob/master/bridge.go#L108) is a simple self contained function that goes through all the motions.
+
+# GLHF
+That's about all there is to controlling the VLAN configuration of a Cumulus switch using SNMP, AgentX, a bit of Go and Netlink. I hope this walk through will be useful for folks interacting with these protocols from Go or other languages. If you like the [agx](https://github.com/rcgoodfellow/agx) or the additions I am working on for [netlink](https://github.com/rcgoodfellow/netlink) I welcome pull requests or issue reports :)

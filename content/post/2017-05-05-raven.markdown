@@ -1,0 +1,375 @@
+---
+title: "Testbed Development using Raven"
+date: 2017-05-05T18:00:00
+disqusid: 1949
+series: testbed
+categories: Testbed
+---
+
+This is a guide to testbed development using at tool called [Raven](https://github.com/rcgoodfellow/raven). Raven is a tool that allows you to rapidly design and virtually deploy a networked system for the purposes of development. Here is the basic workflow we will be walking trough in this tutorial.
+
+1. Design and deploy a testbed topology as a set of interconnected virtual machines and virtual switches.
+2. Plumb the testbed code from your work station into the virtual testbed nodes
+3. Build and install the testbed software
+4. Run a few simple experiments
+
+## Disclaimer
+Raven is a tool for developers and it is still in the early stages. Most things are not plugged into the GUI yet, so you will need to run it side by side with the serving console application to catch diagnostics and get more immediate feedback.
+
+## Testbed Topology Design
+Let's start with the topology we will be using as depicted below.
+<br/>
+<br/>
+<img class="center-image" src="/img/3bed-topo.png" />
+<br/>
+<br/>
+This is a very simple testbed topology where:
+- `boss`, `users` are `router` are the _**infrastructure**_ machines that the testbed software is built and installed on
+- `stem` and `leaf` are switches that preside over the `control` and `experiment` networks respectively
+- `n0`, `n1`, and `n2` are the _**experiment**_ machines that are used to realize experiments within the testbed
+
+The raven model code that defines this testbed topology is located [here](https://github.com/rcgoodfellow/raven/blob/master/models/3bed/model.js). As you can see this is just a little bit of Javascript code. When this code is submitted to the raven back end, it will use NodeJS to execute the code in a Javascript virtual machine and produce and expanded JSON version of the model. It then uses that expanded model to create a virtual realization of the topology using [libvirt](http://libvirt.org/). Now we will take a look at the model code for our topology piece by piece. These sections are meant to be a reference, if your like me and just like reading the self contained code then you can skip to the next section and jump back here as appropriate for clarification.
+
+### Defining Nodes
+
+```javascript
+infra = [boss, users] = 
+  ['boss', 'users'].map(name => 
+    Node(name, 1, [deter_mount, configMount(name)], 'freebsd-11', 'freebsd') 
+  );
+```
+
+This code defines the `users` and `boss` nodes. Here we are using the Javascript [map](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map?v=control) function to make things a bit more concise for creating the very similarly spec'd `boss` and `users` nodes. The `Node` constructor has the following signature. 
+
+<sub>The sneaky `1` integer hanging out there is an artifact of visualization, the viz is based on levels, `1` being on top and working down from there (in terms of vertical positioning) /sigh,
+ that will go away at some point</sub>
+
+```go
+Node(name: String, mounts: [Mount], image: String, os-family: String)
+```
+
+At the current time, I have only created images for `debian-stretch`, `freebsd-11`, `freebsd-11-router`, and `netboot`. The `os-family` string helps the back end to set things up for your nodes in the best way possible. The `mounts` are how you plumb your code into a testbed topology. Consider the following example
+
+```javascript
+deter_mount = {
+  'source': '/home/ry/deter',
+  'point': '/opt/deter'
+};
+```
+
+This basically says, on the host machine that raven is running on there is a folder `/home/ry/deter`, and for any machine definition that includes this in its `mounts`, that folder should be mounted at `/opt/deter`. As you'll notice in the source file referenced earlier, this particular folder has been plumbed into all of the infrastructure nodes as well as the switches.
+
+This pretty much covers all there is to defining machines. Notice that switches have a very similar method of definition.
+
+```javascript
+switches = [
+  Switch('stem', 2, [deter_mount, configMount('stem')]),
+  Switch('leaf', 4, [deter_mount, configMount('leaf')])
+];
+```
+
+This is basically the node constructor with the operating system options taken away. At this time the only switch operating system that is supported is [Cumulus Linux](https://cumulusnetworks.com/products/cumulus-linux/). I hope to add more [ONIE](http://onie.org/) switch operating systems such as [Pica8](http://www.pica8.com/) and [BigSwitch](http://www.bigswitch.com/) as time rolls on.
+
+### Defining Links
+A link is an unordered pair of two endpoints with the constructor signature
+
+```go
+Link(nodeA: String, interfaceA: String, nodeB: String, interfaceB: String)
+```
+
+For example the link between the `stem` and `leaf` switches in the tutorial topology is defined like so
+
+```javascript
+Link('stem', 'swp8', 'leaf', 'swp4')
+```
+
+And that's all there  is to it. The raven back end will take care of creating and plumbing all the virtual networking for you. At this time the interface names themselves are not significant beyond having to be unique within a particular node. It turns out, because we use LLDP to dynamically learn the topology of the testbed at installation time (coming later in this tutorial) we do not need to worry ourselves with _exactly_ what interface is what, just that the paths that we specify are materialized in some permutation.
+
+### Defining the Topology Object
+Raven requires that your topology source file have an object called `topo` that looks like the following.
+
+```javascript
+topo = {
+  'name': '3bed',
+  'nodes': nodes,
+  'switches': switches,
+  'links': links
+};
+```
+
+All of these fields are required. Take a look at the full source linked above to get a better handle on how this object relates to the objects we have defined up to now.
+
+## Testbed configuration
+There are a few phases involved in getting a testbed up and running. The first is getting the network environment set up. When you launch a raven topology, the raw network connectivity is automatically in place, however the nodes and switches still must be configured for the testbed to be able to even install.
+
+Raven leverages [Ansible](https://www.ansible.com/) to configure both nodes and switches alike. There are two phases of configuration, system level config and user config. The system level config is done automatically at topology launch. At this level things like setting the hostnames for machines and mounting user speficied file systems is handled.
+
+You control the user level configuration by placing files a well known locations. The folder structure [here](https://github.com/rcgoodfellow/raven/tree/master/models/3bed) is an example of a raven topology workspace. The two top level directories are `config` and `pre-config`. We'll take on `config` first. The `config` folder is home to Ansible scripts. Any ansible script that matches the name of a node with a 'yml' extension will be executed by raven immediately after the system level configuration has completed. Lets take a look at a relatively simple Ansible file, the one for `router`
+
+```yaml
+---
+- hosts: all
+  become: true
+
+  tasks:
+    - name: copy configs
+      copy: src={{item.src}} dest={{item.dest}} remote_src=True
+      with_items:
+        - { src: '/tmp/config/rc.conf', dest: '/etc/rc.conf' }
+
+    - name: Bring up network
+      command:  "{{ item }}"
+      ignore_errors: yes
+      with_items: 
+        - /etc/rc.d/netif restart vtnet1
+        - /etc/rc.d/netif restart vtnet1.2005
+        - /etc/rc.d/netif restart vtnet1.2006
+        - /etc/rc.d/netif restart vtnet1.2003
+        - /etc/rc.d/netif restart vtnet1.2004
+        - /etc/rc.d/routing restart
+        - service dhclient restart vtnet0
+
+    - name: Start dhcp relay
+      command: service isc-dhcrelay restart
+      ignore_errors: yes
+    
+    #TODO placeholder for installing packages, anything that goes here should
+    #     be merged into package-build eventually
+    #
+    - name: Install requirements
+      command: pkg install -y {{ item }}
+      with_items:
+        - mrouted
+    
+    - name: start mrouted
+      command: service mrouted restart
+```
+
+This file takes care of automating the networking setup for the Deter router machine. The file is fairly self explanatory. It basically copies configuration files into place, restarts all the network interfaces and routing daemons, and installs things that happen to be missing from the base image at the moment. Notice the `- hosts: all` this is required to the very specific way in which raven uses Ansible. So be cognizant that it is _**not**_ the host name of the target machine as one might expect from typical Ansible usage.
+
+The `config` directory is also the conventional home for machine specific files to be mounted. Right now I am explicitly mapping the subfolders [here](https://github.com/rcgoodfellow/raven/tree/master/models/3bed/config/files) on to their respective machines in the model file. However I do plan to make this a convention in the future. Any folder in `topo-workspace/config/files/<machine>` will be mounted to that machine under `/opt/config`.
+
+There are presently quite a few configuration files in the config sub directories. Deter is a complex beast to set up, and the configs and automation that are in those folders bring it all the way up with actual real projects and real users, not just `elabman` and the `emulab-ops` projects. I encourage you to poke around, see what is there, and how the Ansible automation files interact with the underlying configuration files.
+
+## Pre-configuration
+Pre-configuration unsurprisingly, runs right before configuration. It is a phase in which you have the opportunity to hook arbitrary code into raven so you can generate any configuration files you may need that are topology dependent and need information like IP or MAC addresses. The convention is very simple, in the `pre-confg` folder if there is an executable file called `run`, raven will execute it with the environment variable `$TOPOJSON` set which points to the expanded and detail-filled in JSON topology that raven has constructed. Your code can then read this file and do whatever it needs to. An example is [this](https://github.com/rcgoodfellow/raven/blob/master/models/3bed/pre-config/rvn2cumulus.go) code written in [Go](https://golang.org/) that dynamically builds Cumulus Linux interface configuration files based on a raven topology to be placed on the switches in the subsequent configuration stage.
+
+## Setting up your environment
+This section assumes you are using a testbed node. If not just take a look at the scripts in `users:/share/rvn` to see what they are doing.
+
+### Install Raven & Setup for Deter Development
+
+```shell
+/share/rvn/install.sh
+/share/rvn/deterdev.sh
+```
+
+### Running the Web Server
+Raven runs mostly as a web application that talks to libvirt. To run the web application do the following.
+
+```
+sudo /share/rvn/run
+```
+Raven uses the [revel web framework](https://revel.github.io/). 
+
+Once raven is running you will see a console like this
+
+```shell
+root@tb0:~/.go/src/github.com/rcgoodfellow/raven/web# revel run
+~
+~ revel! http://revel.github.io
+~
+INFO  2017/04/27 21:39:22 revel.go:365: Loaded module testrunner
+INFO  2017/04/27 21:39:22 revel.go:365: Loaded module static
+INFO  2017/04/27 21:39:22 revel.go:230: Initialized Revel v0.14.0 (2017-03-24) for >= go1.4
+INFO  2017/04/27 21:39:22 run.go:119: Running rvn (github.com/rcgoodfellow/raven/web) in dev mode
+INFO  2017/04/27 21:39:22 harness.go:175: Listening on localhost:9000
+INFO  2017/04/27 21:39:24 build.go:191: Cleaning dir tmp
+INFO  2017/04/27 21:39:24 build.go:191: Cleaning dir routes
+INFO  2017/04/27 21:39:24 build.go:191: Cleaning dir tmp
+INFO  2017/04/27 21:39:24 build.go:191: Cleaning dir routes
+INFO  2017/04/27 21:39:26 revel.go:365: Loaded module testrunner
+INFO  2017/04/27 21:39:26 revel.go:365: Loaded module static
+INFO  2017/04/27 21:39:26 revel.go:230: Initialized Revel v0.14.0 (2017-03-24) for >= go1.4
+INFO  2017/04/27 21:39:26 main.go:30: Running revel server
+Go to /@tests to run the tests.
+Listening on localhost:43093...
+2017/04/27 21:39:26.150 127.0.0.1 200 114.505869ms GET /
+2017/04/27 21:39:26.332 127.0.0.1 200  697.117µs GET /public/js/jquery-2.2.4.min.js
+2017/04/27 21:39:26.334 127.0.0.1 200  354.251µs GET /public/css/rvn.css
+2017/04/27 21:39:26.335 127.0.0.1 200  252.692µs GET /public/js/modeling.js
+2017/04/27 21:39:26.337 127.0.0.1 200  341.648µs GET /public/js/rvn-vjs.js
+2017/04/27 21:39:26.452 127.0.0.1 200  349.852µs GET /public/js/tb-to-visjs.js
+```
+
+Keep that console running, it will provide you with useful information as you are working. At some point that information should be plumbed into the web interface, but that will come later. Speaking of the web interface, point your browser at
+
+```
+http://localhost:9000/?dir=/space/raven/models/3bed
+```
+
+The web interface will load and compile and expand the model code and present you with a visualization. If you are interested, the integrated javascript console in your browser will also spit useful information at you from time to tome (I know, alpha stage).
+
+If you have raven running on a powerful server machine but work elsewhere like me, you will find that using a SOCKS proxy in ssh a good way to access the interface. I would not go the route of telling raven to listen on an external interface. There is no security whatsoever, and you must run raven as root for it to play nicely with libvirt and the Linux virtual networking facilities.
+
+When you have your network plumbing figured out. The web interface should look like the following.
+<br/>
+<br/>
+<img class="center-image" src="/img/rvn-ui.png" />
+<br/>
+<br/>
+There are a few buttons to control things at the bottom.
+
+- `push` defines the network model on the back end e.g. compiles/expands the javascript and makes the appropriate definitions in libvirt. **warning** this will clobber a live experiment if it is running, it overwrites everything!
+- `status` queries the raven back end for all kinds of useful formation like the ip addresses of your nodes. At first it will just dump this information in one raw textblob shot to the screen. You can then click around on the various nodes and links and it will only selectively puke text at you based on what you are clicking on.
+- `destroy` completely tears down and undefines a topology
+- `launch` launches a topology. It is a bit stupid at the moment and requires that you `push` first.
+- `configure` launches the user configuration stage discussed earlier
+
+Your nodes are up when you click the status button and the IP addresses have populated. Note that for the experiment nodes n0-n2. They do not have an OS to start with so there will be no IP addresses at the outset.
+
+## Actually using the environment
+Ok so now the environment is up, but how do we get into the actual nodes!? Raven comes with a command line tool called [rvn-ssh](https://github.com/rcgoodfellow/raven/tree/master/go-rvn-ssh). It works like this
+
+```shell
+ry@tb0:~$ sudo rvn-ssh 3bed boss
+Last login: Sun Apr 30 22:58:09 2017 from 172.22.0.1
+FreeBSD 11.0-RELEASE-p9 (GENERIC) #0: Tue Apr 11 08:48:40 UTC 2017
+
+Welcome to FreeBSD!
+
+$ 
+```
+
+Yes you must use `sudo`, I have not quite worked out some permissions kinks with the libvirt API. To use this program you will need to install it and add it to your `GOPATH` just like any other Go program. Alternatively, if you like typing and clicking around, you can just use the web interface to look up the IP address and ssh in directly. Every raven image has the username password combo rvn:rvn. The ssh keys that the setup script from earlier installed into `/var/rvn/ssh` will also get you there password free (this is how rvn-ssh works). 
+
+There is also another useful program for running add-hoc Ansible scripts called [rvn-asnible](https://github.com/rcgoodfellow/raven/tree/master/go-rvn-ansible). It's usage goes like this
+
+```shell
+ry@tb0:~/raven/models/3bed$ sudo rvn-ansible 3bed walrus config/walrus.yml 
+
+PLAY [all] *********************************************************************
+
+TASK [setup] *******************************************************************
+ok: [172.22.0.135]
+
+TASK [install software] ********************************************************
+ok: [172.22.0.135] => (item=[u'lldpd', u'redis-server', u'python3-pip', u'bash-completion', u'vim', u'tmux'])
+
+TASK [bring up eth1] ***********************************************************
+changed: [172.22.0.135]
+
+TASK [Install redis-python] ****************************************************
+changed: [172.22.0.135]
+
+TASK [Set redis listening address] *********************************************
+ok: [172.22.0.135]
+
+TASK [Restart redis] ***********************************************************
+changed: [172.22.0.135]
+
+PLAY RECAP *********************************************************************
+172.22.0.135               : ok=7    changed=4    unreachable=0    failed=0   
+```
+
+## Building you a Testbed
+Ok, so once you have poked around in the environment a bit. It's time to actually turn it into a Deter testbed. The first thing to do is build the preboot stage components, deterboot and the linux-mfs.
+
+__Note that in the steps that follow, building deterboot and the linux mfs is now optional as the installer will fetch prebuilt artifacts for these. If you are not working on the bootloader or the mfs you don't need to bother with building them__
+
+### Building deterboot
+
+```shell
+cd /space/deter/deterboot
+./build-deps.sh
+make
+```
+
+### Building linux-mfs
+
+```shell
+cd /space/deter/linux-mfs
+./build-deps.sh
+./build.sh
+```
+
+### Testbed setup
+You will need a definitions file in `/space/deter/defs/defs-vbed-3`, here is what I use
+
+```make
+# The subdomain name of this installation
+OURDOMAIN=vbed3.deterlab.net
+THISHOMEBASE=vbed3.deterlab.net
+SITENAME="USC/ISI"
+SITECOPYRIGHT="University of Southern California Information Sciences Institute (USC/ISI)"
+SITEDATES=2017
+
+#
+# SSL Setup
+#
+SSLCERT_COUNTRY="US"
+SSLCERT_STATE="California"
+SSLCERT_LOCALITY="Marina del Rey"
+SSLCERT_ORGNAME="DETER Network Testbed"
+
+#
+# Domain, host names, and external IP addresses
+#
+# The network that boss and users sit on
+EXTERNAL_TESTBED_NETWORK=10.0.23.0
+EXTERNAL_TESTBED_NETMASK=255.255.255.0
+
+# This should be boss.<yoursubdomain as defined in THISHOMEBASE>
+EXTERNAL_BOSSNODE_IP=10.0.23.100
+
+# This should be users.<yoursubdomain as defined in THISHOMEBASE>
+EXTERNAL_USERNODE_IP=10.0.23.101
+
+# Named forwarders, typically your upstream DNS servers.
+NAMED_FORWARDERS="8.8.8.8"
+
+FSDIR_GROUPS=/groups
+FSDIR_PROJ=/proj
+FSDIR_USERS=/users
+FSDIR_SHARE=/share
+
+```
+
+### Building and installing `users`
+The first thing we must do is build and install users. This is where all the file systems live, so it gets installed first. ssh into the machine and change directory to `/tmp/config` where you will find the script [build_install.sh](https://github.com/rcgoodfellow/raven/blob/master/models/3bed/config/files/users/build_install.sh). Run this script to build and install the users software. This script will automatically reboot the machine.
+
+### Building and installing `boss`
+After users has rebooted, you can go ahead and install boss. The process is exactly the same, execute `/tmp/config/build_install.sh` (both of these as root), and the software will automatically build and install. After boss installs there are some additional configuration steps that need to happen. Remember rvn-ansbile, well now we need to run `rvn-ansible 3bed boss` on the script [boss_3bed_setup.yml](https://github.com/rcgoodfellow/raven/blob/master/models/3bed/config/boss_3bed_setup.yml). If you are doing deterboot or linux-mfs development you will also need to run [boss-update-preboot.yml](https://github.com/rcgoodfellow/raven/blob/master/models/3bed/config/boss_update_preboot.yml) each time you rebuild ither of them. The post install automation performs futher setup on the testbed that brings it almost to a level of full functionality. Read the file to see what it is up to. 
+
+The update preboot automation sets up and installs the new deter bootloading facilities. These are comprised of a [network boot loader called deterboot](https://github.com/deter-project/deterboot) and a shiny new [linux-based memory file system - MFS](https://github.com/deter-project/linux-mfs) for os-loading and general maintenance. Right now the topology setup assumes you have built these systems separately but have their build directories mounted into the development environment. See the update preboot script and cross reference with the topology to get a feel for how to setup your host filesystem. I will explicitly document this shortly.
+
+After you have run these scripts reboot `boss`.
+
+
+### Logging in to the deter web interface
+Once `boss` has rebooted, you can log into the web interface. Because of the way our web code works, you will need to access it through it's actual FQDN. The easiest way to do this is to set an `/etc/hosts/` entry on your host computer and go in through a SOCKS proxy. The defs file that covers the 3bed environment sets the FQDN to `vbed3.deterlab.net` like the following
+<br/>
+<br/>
+![deterui](https://mirror.deterlab.net/rvn/doc/deter-web.png)
+<br/>
+<br/>
+You can log is as [Admiral Bill Adama](https://en.wikipedia.org/wiki/William_Adama) of the Colonial Fleet using the password `:LKJPOIU`.
+
+### Accessing testbed nodes
+The testbed nodes are in a state of limbo. They were booted by libvirt, but they had no operating system installed. But now we can reboot them and Deter will pick them up for assimilation into the collective. To access them we use vnc. This is something I have not plumbed into raven yet so you will have to use libvirt directly. Here is how
+
+```
+root@tb0:~# virsh vncdisplay 3bed_n0
+127.0.0.1:6
+```
+
+Remember to be root or `sudo`-ing when you use `virsh`. The libvirt naming of the nodes is `topology-name_node-name`. That vnc display means you can access the node at port 5906 from the local host. I typically tunnel in from another computer using plain old vanilla ssh tunnels, no SOCKS proxy required with this one. You will need a VNC client, I really like [gnome remote desktop viewer](https://help.gnome.org/users/vinagre/stable/)
+<br/>
+<br/>
+<img class="center-image" src="/img/tbremote.png" />
+<br/>
+<br/>
+Once you reboot the nodes the MFS will automatically register them with boss and it is business as usuall for adding nodes to the testbed through the web interface.
+
+## GLHF
+I know this probably seems like a lot going on. The testbed is a complex beast. However, with this toolset I can go from zero to fresh install in minutes (maybe even less than a minute now). That is a huge win for development. There are some rough edges for sure, but I hope we can move this environment forward together now that I think it is approaching usability for general development.

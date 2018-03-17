@@ -1,0 +1,8 @@
+baseURL = "http://example.org/"
+languageCode = "en-us"
+title = "the blog of ry goodwu"
+theme = "rygoo"
+MetaDataFormat = "toml"
+
+[taxonomies]
+  series = "series"

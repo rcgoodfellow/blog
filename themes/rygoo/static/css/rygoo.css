@@ -1,0 +1,53 @@
+
+@import url('https://fonts.googleapis.com/css?family=Roboto+Slab:100,300,400,700');
+
+html {
+  font-family: 'Roboto Slab', serif;
+  font-size: 1.2em;
+}
+
+body {
+  margin: 50px;
+}
+
+h1,h2,h3,h4{
+  color: #983e43;
+}
+
+h1 {
+  font-weight: 300;
+}
+
+h2 {
+  font-weight: 300;
+}
+
+.date {
+  font-weight: 200;
+}
+
+.title {
+  font-weight: 400;
+  font-size: 1.4em;
+}
+
+.logo {
+  height: 100px;
+}
+
+a,
+a:visited {
+  color: #327684;
+}
+
+.center-image {
+  margin: 0 auto;
+  display: block;
+  max-width: 900px;
+}
+
+.ghlogo {
+  margin: 10px;
+  margin-top: 20px;
+}
+
