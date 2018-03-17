@@ -3,6 +3,8 @@ languageCode = "en-us"
 title = "the blog of ry goodwu"
 theme = "rygoo"
 MetaDataFormat = "toml"
+pygmentsCodeFences = true
+pygmentsStyle = "manni"
 
 [taxonomies]
   series = "series"
