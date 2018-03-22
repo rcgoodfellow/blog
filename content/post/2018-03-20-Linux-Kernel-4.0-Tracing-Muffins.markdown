@@ -780,7 +780,9 @@ struct proto udp_prot = {
 	.diag_destroy	   = udp_abort,
 };
 ```
-along with [udp_sendmsg](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n866). Now we focus in on the parts of `udp_sendmsg` that actually to the sending, assuming the [UDP_CORK](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/uapi/linux/udp.h?h=v4.15.11#n31) is not set.
+along with [udp_sendmsg](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n866). 
+
+Now we focus in on the parts of `udp_sendmsg` that actually to the sending, assuming the [UDP_CORK](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/uapi/linux/udp.h?h=v4.15.11#n31) is not set.
 
 {{< highlight c "linenos=inline,linenostart=1006" >}}
 if (!rt) {
@@ -838,6 +840,8 @@ There are three things going on here we will be focusing on.
 - get a reference to the kernels routing table ~ line 1019
 - create a socket buffer with the data we want to send ~ line 1046
 - send the socket buffer full of data `udp_send_skb` using a flow table constructed from the kernels routing table.
+
+#### Routing - Figuring Out the Next Hop
 
 The first stop for getting the kernel routing table reference is [`ip_route_output_flow`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2555). For simplicity we assume that [xfrm](http://man7.org/linux/man-pages/man8/ip-xfrm.8.html) is not in play so we sill just focus on `__ip_route_output_key`.
 
@@ -1043,4 +1047,8 @@ void fib_select_path(struct net *net, struct fib_result *res,
 }
 ```
 
-This function decides which path to use from a list of `fib_alias` structures.
+This function decides which path to use from a list of `fib_alias` structures. The entire output of this process is packed up into an [`rtable`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/route.h?h=v4.15.11#n51) structure by [`__mkroute_output`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2149) and returned to the `ip_route_output_key_hash_rcu` function above which is ultimately plumbed back to the `udp_sendmsg` above in the `rt` variable at line 1019. 
+
+#### Transmission - Actually Shoving Muffins Through Socket
+
+Next a socket buffer is created to encapsulate the muffin via [`ip_make_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/ip_output.c?h=v4.15.11#n1457). Then the skb encapsulated muffin is ultimately shoved out the front door via [`udp_send_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n786).
