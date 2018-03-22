@@ -938,3 +938,109 @@ static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
 	return err;
 }
 ```
+
+Lets take a look at a very simplified version of [`fib_get_table`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1296), note that all of the error handling and bactrace code has been removed from the code below. Only the parts necessary to understand the _normal_ case are shown so we can get an immideate picture of what is going on.
+
+{{< highlight c "linenos=inline" >}}
+int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
+         struct fib_result *res, int fib_flags)
+{
+  struct trie *t = (struct trie *) tb->tb_data;
+  const t_key key = ntohl(flp->daddr);
+  struct key_vector *n, *pn;
+  struct fib_alias *fa;
+  unsigned long index;
+  t_key cindex;
+
+  pn = t->kv;
+  cindex = 0;
+
+  n = get_child_rcu(pn, cindex);
+
+  /* Travel to the longest prefix match in the trie */
+  for (;;) {
+    index = get_cindex(key, n);
+
+    /* we have found a leaf. Prefixes have already been compared */
+    if (IS_LEAF(n))
+      goto found;
+
+    n = get_child_rcu(n, index);
+  }
+
+found:
+  /* Process the leaf, if that fails fall back to backtracing */
+  hlist_for_each_entry_rcu(fa, &n->leaf, fa_list) {
+    struct fib_info *fi = fa->fa_info;
+    int nhsel, err;
+
+    if (fi->fib_dead)
+      continue;
+
+    int err = fib_props[fa->fa_type].error;
+
+    for (nhsel = 0; nhsel < fi->fib_nhs; nhsel++) {
+      const struct fib_nh *nh = &fi->fib_nh[nhsel];
+      struct in_device *in_dev = __in_dev_get_rcu(nh->nh_dev);
+
+      if (in_dev && nh->nh_flags & RTNH_F_LINKDOWN)
+        continue;
+
+      res->prefix = htonl(n->key);
+      res->prefixlen = KEYLENGTH - fa->fa_slen;
+      res->nh_sel = nhsel;
+      res->type = fa->fa_type;
+      res->scope = fi->fib_scope;
+      res->fi = fi;
+      res->table = tb;
+      res->fa_head = &n->leaf;
+
+      return err;
+    }
+  }
+}
+{{</highlight>}}
+
+The first thing to notice here is that the FIB is accessed through a [trie](https://en.wikipedia.org/wiki/Trie), where interior nodes are destination address prefixes. The trie is extracted from the `fib_table` at line 4 and we initialize the key that is used to search the tree in line 5 as the destination address for the outbound packets. Next a reference to the first node in the vector of keys that comprisies the tree is created in line 14.
+
+The loop at line 17 iterates through the trie based on the search key, jumping to the `found` label once a leaf node has been reached. Once we arrive at `found`, we iterate through the `fib_alias` entrys found at the leaf, until we find one that satisfies what we are looking for. There has been one check in this example preserved from the actual code at line 33. There are many more checks in play, consult the [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422) to see them all.
+
+Once we have our hands on `fib_alias` that passes the required checks, we iterate through it's next-hop entries at line 36. The `nh` in `fib_nh` [stands for next-hop](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_semantics.c?h=v4.15.11#n735). The next-hop entries are checked for a number of conditions (again massively simplified here, see [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422)). If the checks pass then we fill in the `res` result structure and return.
+
+Note in particular that on line 50, the `fib_info` struct is assigned to the result via the `fi` struct member. We can now access the device associated to the outbound path through [`FIB_RES_DEV`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/ip_fib.h?h=v4.15.11#n183)
+
+```c
+#define FIB_RES_DEV(res)   (FIB_RES_NH(res).nh_dev)
+#define FIB_RES_NH(res)    ((res).fi->fib_nh[(res).nh_sel])
+```
+
+This gives us access to the [`net_device`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443) structure. This is a rather large structure that collects most things one would need to know about a network device in order to shove muffins through it. `FIB_RES_DEV` is used by the `ip_route_output_key_hash_rcu` function code above to get ahold of the output device. Poping back up the stack to that code, the next point of interest is [`fib_select_path`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443)
+
+```c
+void fib_select_path(struct net *net, struct fib_result *res,
+         struct flowi4 *fl4, const struct sk_buff *skb)
+{
+  bool oif_check;
+
+  oif_check = (fl4->flowi4_oif == 0 ||
+         fl4->flowi4_flags & FLOWI_FLAG_SKIP_NH_OIF);
+
+#ifdef CONFIG_IP_ROUTE_MULTIPATH
+  if (res->fi->fib_nhs > 1 && oif_check) {
+    int h = fib_multipath_hash(res->fi, fl4, skb);
+
+    fib_select_multipath(res, h);
+  }
+  else
+#endif
+  if (!res->prefixlen &&
+      res->table->tb_num_default > 1 &&
+      res->type == RTN_UNICAST && oif_check)
+    fib_select_default(fl4, res);
+
+  if (!fl4->saddr)
+    fl4->saddr = FIB_RES_PREFSRC(net, *res);
+}
+```
+
+This function decides which path to use from a list of `fib_alias` structures.
