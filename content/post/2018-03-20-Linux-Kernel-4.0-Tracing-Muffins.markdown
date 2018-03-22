@@ -233,7 +233,174 @@ SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
 	return sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 }
 ```
-The socket is created through [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196), and its integer identifier returned back through the syscall chain.
+
+Jumping into [`sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1305) 
+```c
+int sock_create(int family, int type, int protocol, struct socket **res)
+{
+	return __sock_create(current->nsproxy->net_ns, family, type, protocol, res, 0);
+}
+```
+We see an additional piece of infromation being injected into the call chain, `current->nsproxy->net_ns`. Current is a pointer to the current [`task_struct`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/sched.h?h=v4.15.11#n520) from [arch/x86/include/asm/current.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/arch/x86/include/asm/current.h?h=v4.15.11#n18).
+
+```c
+struct task_struct {
+  // a great many things skipped over ....
+
+  /* Namespaces: */
+	struct nsproxy			*nsproxy;
+
+  // a great many more things skipped over ....
+}
+```
+
+The `nsproxy` struct is defined in [include/linux/nsproxy.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/nsproxy.h?h=v4.15.11#n31) and looks like this
+
+```c
+/*
+ * A structure to contain pointers to all per-process
+ * namespaces - fs (mount), uts, network, sysvipc, etc.
+ *
+ * The pid namespace is an exception -- it's accessed using
+ * task_active_pid_ns.  The pid namespace here is the
+ * namespace that children will use.
+ *
+ * 'count' is the number of tasks holding a reference.
+ * The count for each namespace, then, will be the number
+ * of nsproxies pointing to it, not the number of tasks.
+ *
+ * The nsproxy is shared by tasks which share all namespaces.
+ * As soon as a single namespace is cloned or unshared, the
+ * nsproxy is copied.
+ */
+struct nsproxy {
+	atomic_t count;
+	struct uts_namespace *uts_ns;
+	struct ipc_namespace *ipc_ns;
+	struct mnt_namespace *mnt_ns;
+	struct pid_namespace *pid_ns_for_children;
+	struct net 	     *net_ns;
+	struct cgroup_namespace *cgroup_ns;
+};
+```
+
+The network namespace structure `net` is defined in [include/net/net_namespace.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/net_namespace.h?h=v4.15.11#n50). It's probably one of the most imporant structures in the Linux network internals, so we show it in all it's glory here. Namespaces are the basis for kernel level isolation technologies such as Docker, providing individual processes with a segmented view of the kernel and system resources.
+
+```c
+struct net {
+  refcount_t              passive;          /* To decided when the network
+                                             * namespace should be freed.
+                                             */
+  atomic_t                count;            /* To decided when the network
+                                             *  namespace should be shut down.
+                                             */
+  spinlock_t              rules_mod_lock;
+
+  atomic64_t              cookie_gen;
+
+  struct list_head        list;             /* list of network namespaces */
+  struct list_head        cleanup_list;     /* namespaces on death row */
+  struct list_head        exit_list;        /* Use only net_mutex */
+
+  struct user_namespace   *user_ns;         /* Owning user namespace */
+  struct ucounts          *ucounts;
+  spinlock_t              nsid_lock;
+  struct idr              netns_ids;
+
+  struct ns_common        ns;
+
+  struct proc_dir_entry   *proc_net;
+  struct proc_dir_entry   *proc_net_stat;
+
+#ifdef CONFIG_SYSCTL
+  struct ctl_table_set    sysctls;
+#endif
+
+  struct sock             *rtnl;           /* rtnetlink socket */
+  struct sock             *genl_sock;
+
+  struct list_head        dev_base_head;
+  struct hlist_head       *dev_name_head;
+  struct hlist_head       *dev_index_head;
+  unsigned int            dev_base_seq;   /* protected by rtnl_mutex */
+  int                     ifindex;
+  unsigned int            dev_unreg_count;
+
+  /* core fib_rules */
+  struct list_head        rules_ops;
+
+  struct list_head        fib_notifier_ops;       /* protected by net_mutex */
+
+  struct net_device       *loopback_dev;    /* The loopback */
+  struct netns_core       core;
+  struct netns_mib        mib;
+  struct netns_packet     packet;
+  struct netns_unix       unx;
+  struct netns_ipv4       ipv4;
+#if IS_ENABLED(CONFIG_IPV6)
+  struct netns_ipv6       ipv6;
+#endif
+#if IS_ENABLED(CONFIG_IEEE802154_6LOWPAN)
+  struct 
+  netns_ieee802154_lowpan ieee802154_lowpan;
+#endif
+#if defined(CONFIG_IP_SCTP) || defined(CONFIG_IP_SCTP_MODULE)
+  struct netns_sctp       sctp;
+#endif
+#if defined(CONFIG_IP_DCCP) || defined(CONFIG_IP_DCCP_MODULE)
+  struct netns_dccp       dccp;
+#endif
+#ifdef CONFIG_NETFILTER
+  struct netns_nf         nf;
+  struct netns_xt         xt;
+#if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
+  struct netns_ct         ct;
+#endif
+#if defined(CONFIG_NF_TABLES) || defined(CONFIG_NF_TABLES_MODULE)
+  struct netns_nftables   nft;
+#endif
+#if IS_ENABLED(CONFIG_NF_DEFRAG_IPV6)
+  struct netns_nf_frag    nf_frag;
+#endif
+  struct sock             *nfnl;
+  struct sock             *nfnl_stash;
+#if IS_ENABLED(CONFIG_NETFILTER_NETLINK_ACCT)
+  struct list_head        nfnl_acct_list;
+#endif
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+  struct list_head        nfct_timeout_list;
+#endif
+#endif
+#ifdef CONFIG_WEXT_CORE
+  struct sk_buff_head     wext_nlevents;
+#endif
+  struct 
+  net_generic __rcu       *gen;
+
+  /* Note : following structs are cache line aligned */
+#ifdef CONFIG_XFRM
+  struct netns_xfrm       xfrm;
+#endif
+#if IS_ENABLED(CONFIG_IP_VS)
+  struct netns_ipvs       *ipvs;
+#endif
+#if IS_ENABLED(CONFIG_MPLS)
+  struct netns_mpls       mpls;
+#endif
+#if IS_ENABLED(CONFIG_CAN)
+  struct netns_can        can;
+#endif
+  struct sock             *diag_nlsk;
+  atomic_t                fnhe_genid;
+} __randomize_layout;
+```
+
+The socket is created through [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196), and its integer identifier returned back through the syscall chain. We'll go into more detail on what information is encapsulated into the sock struct later when it is required to understand packet routing inside the kernel. The part we will be most concerned with here is the struct member
+```c
+struct netns_ipv4 ipv4;
+```
+
+The `netns_ipv4` struct is defined in [include/net//netns/ipv4](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/netns/ipv4.h?h=v4.15.11#n42).
 
 ### Shoving Muffin Through Socket
 
@@ -613,4 +780,161 @@ struct proto udp_prot = {
 	.diag_destroy	   = udp_abort,
 };
 ```
-along with [udp_sendmsg](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n866).
+along with [udp_sendmsg](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n866). Now we focus in on the parts of `udp_sendmsg` that actually to the sending, assuming the [UDP_CORK](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/uapi/linux/udp.h?h=v4.15.11#n31) is not set.
+
+{{< highlight c "linenos=inline,linenostart=1006" >}}
+if (!rt) {
+		struct net *net = sock_net(sk);
+		__u8 flow_flags = inet_sk_flowi_flags(sk);
+
+		fl4 = &fl4_stack;
+
+		flowi4_init_output(fl4, ipc.oif, sk->sk_mark, tos,
+				   RT_SCOPE_UNIVERSE, sk->sk_protocol,
+				   flow_flags,
+				   faddr, saddr, dport, inet->inet_sport,
+				   sk->sk_uid);
+
+		security_sk_classify_flow(sk, flowi4_to_flowi(fl4));
+		rt = ip_route_output_flow(net, fl4, sk);
+		if (IS_ERR(rt)) {
+			err = PTR_ERR(rt);
+			rt = NULL;
+			if (err == -ENETUNREACH)
+				IP_INC_STATS(net, IPSTATS_MIB_OUTNOROUTES);
+			goto out;
+		}
+
+		err = -EACCES;
+		if ((rt->rt_flags & RTCF_BROADCAST) &&
+		    !sock_flag(sk, SOCK_BROADCAST))
+			goto out;
+		if (connected)
+			sk_dst_set(sk, dst_clone(&rt->dst));
+	}
+
+	if (msg->msg_flags&MSG_CONFIRM)
+		goto do_confirm;
+back_from_confirm:
+
+	saddr = fl4->saddr;
+	if (!ipc.addr)
+		daddr = ipc.addr = fl4->daddr;
+
+	/* Lockless fast path for the non-corking case. */
+	if (!corkreq) {
+		skb = ip_make_skb(sk, fl4, getfrag, msg, ulen,
+				  sizeof(struct udphdr), &ipc, &rt,
+				  msg->msg_flags);
+		err = PTR_ERR(skb);
+		if (!IS_ERR_OR_NULL(skb))
+			err = udp_send_skb(skb, fl4);
+		goto out;
+	}
+{{</highlight>}}
+
+There are three things going on here we will be focusing on. 
+
+- get a reference to the kernels routing table ~ line 1019
+- create a socket buffer with the data we want to send ~ line 1046
+- send the socket buffer full of data `udp_send_skb` using a flow table constructed from the kernels routing table.
+
+The first stop for getting the kernel routing table reference is [`ip_route_output_flow`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2555). For simplicity we assume that [xfrm](http://man7.org/linux/man-pages/man8/ip-xfrm.8.html) is not in play so we sill just focus on `__ip_route_output_key`.
+
+```c
+struct rtable *ip_route_output_flow(struct net *net, struct flowi4 *flp4,
+				    const struct sock *sk)
+{
+	struct rtable *rt = __ip_route_output_key(net, flp4);
+
+	if (IS_ERR(rt))
+		return rt;
+
+	if (flp4->flowi4_proto)
+		rt = (struct rtable *)xfrm_lookup_route(net, &rt->dst,
+							flowi4_to_flowi(flp4),
+							sk, 0);
+
+	return rt;
+}
+```
+
+[`__ip_route_output_key`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/route.h?h=v4.15.11#n122)
+```c
+static inline struct rtable *__ip_route_output_key(struct net *net,
+						   struct flowi4 *flp)
+{
+	return ip_route_output_key_hash(net, flp, NULL);
+}
+```
+
+This lands us at [`ip_route_output_key_hash`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2287)
+```c
+struct rtable *ip_route_output_key_hash(struct net *net, struct flowi4 *fl4,
+					const struct sk_buff *skb)
+{
+	__u8 tos = RT_FL_TOS(fl4);
+	struct fib_result res;
+	struct rtable *rth;
+
+	res.tclassid	= 0;
+	res.fi		= NULL;
+	res.table	= NULL;
+
+	fl4->flowi4_iif = LOOPBACK_IFINDEX;
+	fl4->flowi4_tos = tos & IPTOS_RT_MASK;
+	fl4->flowi4_scope = ((tos & RTO_ONLINK) ?
+			 RT_SCOPE_LINK : RT_SCOPE_UNIVERSE);
+
+	rcu_read_lock();
+	rth = ip_route_output_key_hash_rcu(net, fl4, &res, skb);
+	rcu_read_unlock();
+
+	return rth;
+}
+```
+
+which is really just preparing arguments for [`ip_route_output_key_hash_rcu`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2311). In our muffin pushing client code, we are using a unicast address and have done nothing to tell the kernel as of yet, what interface the socket is associated with. So our starting point of interest in `ip_route_ouput_key_hash_rcu` is the `fib_lookup` at line 2411
+
+```c
+  err = fib_lookup(net, fl4, res, 0);
+  if (err) {
+    // error handling omitted  
+  }
+
+  // loopback case handling omitted
+
+  fib_select_path(net, res, fl4, skb);
+
+  dev_out = FIB_RES_DEV(*res);
+  fl4->flowi4_oif = dev_out->ifindex;
+
+make_route:
+  rth = __mkroute_output(res, fl4, orig_oif, dev_out, flags);
+
+out:
+  return rth;
+```
+
+Finding the output device requires looking into the forwarding information base (FIB). The [`fib_lookup`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/ip_fib.h?h=v4.15.11#n261) code is the following
+```c
+static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
+			     struct fib_result *res, unsigned int flags)
+{
+	struct fib_table *tb;
+	int err = -ENETUNREACH;
+
+	rcu_read_lock();
+
+	tb = fib_get_table(net, RT_TABLE_MAIN);
+	if (tb)
+		err = fib_table_lookup(tb, flp, res, flags | FIB_LOOKUP_NOREF);
+
+	if (err == -EAGAIN)
+		err = -ENETUNREACH;
+
+	rcu_read_unlock();
+
+	return err;
+}
+```
