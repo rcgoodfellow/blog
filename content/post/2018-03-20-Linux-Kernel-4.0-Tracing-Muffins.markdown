@@ -784,7 +784,7 @@ struct proto udp_prot = {
 ```
 along with [udp_sendmsg](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n866). 
 
-Now we focus in on the parts of `udp_sendmsg` that actually to the sending, assuming the [UDP_CORK](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/uapi/linux/udp.h?h=v4.15.11#n31) is not set.
+Now we focus in on the parts of `udp_sendmsg` that actually do the sending, assuming the [UDP_CORK](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/uapi/linux/udp.h?h=v4.15.11#n31) is not set.
 
 {{< highlight c "linenos=inline,linenostart=1006" >}}
 if (!rt) {
