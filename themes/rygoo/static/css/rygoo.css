@@ -31,9 +31,27 @@ h2 {
   font-size: 1.4em;
 }
 
+.banner {
+  display: flex;
+  align-items: center;
+  justify-content: left;
+  flex-direction: row;
+}
+
+
+.il {
+  display: flex;
+  align-items: center;
+}
+
+.rygoo {
+  display: inline-block;
+  margin: 5px;
+}
+
 .logo {
   height: 100px;
-  margin: 0 auto;
+  display: inline-block;
 }
 
 .post-header {
@@ -61,6 +79,15 @@ h2 {
   vertical-align: middle;
 }
 
+.ico-btn {
+  text-decoration: none;
+}
+
+svg {
+  display: inline-block;
+  margin: 5px;
+}
+
 a,
 a:visited {
   color: #327684;
@@ -72,10 +99,12 @@ a:visited {
   max-width: 900px;
 }
 
+/*
 .ghlogo {
   margin: 10px;
   margin-top: 20px;
 }
+*/
 
 th, td {
   padding-left: 15px;
