@@ -33,6 +33,32 @@ h2 {
 
 .logo {
   height: 100px;
+  margin: 0 auto;
+}
+
+.post-header {
+  height: 74px;
+  display: flex;
+  align-items: center;
+  justify-content: left;
+}
+
+.post-title {
+  display: inline-block;
+  vertical-align: middle;
+  margin: 20px;
+}
+.logo-post {
+  height: 100%;
+  float: right;
+  display: inline-block;
+  vertical-align: middle;
+  margin: 20px;
+}
+.logo-post-img {
+  height: 100%;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 a,
