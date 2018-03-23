@@ -1,12 +1,12 @@
 ---
-title: "Linux Networking Internals: Tracing Muffins"
+title: "Tracing Muffins: Part 1 Sending"
 date: 2018-03-20T10:47:00
 disqusid: 1947
 series: lni
 categories: Linux Network Internals
 ---
 
-This post is a first in a series about Linux networking internals. The goal is very simple, send the string "muffin" from one machine to another, tracing its path from the source user space program, down through the source computers network stack, across a whitebox switch runnign Cumulus Linux, back up the network stack of the receiving computer and finally to its destination in the receiving user space program.
+This post is a first in a series about Linux networking internals. The goal is very simple, send the string "muffin" from one machine to another, tracing its path from the source user space program, down through the source computers network stack, across a whitebox switch running Cumulus Linux, back up the network stack of the receiving computer and finally to its destination in the receiving user space program.
 
 ## User Space Program
 We begin our journey with the userspace program. This program essentially does three things
@@ -85,7 +85,7 @@ int __socket (int fd, int type, int domain)
 }
 ```
 
-And as we can see this is just a simple passthrough to a syscall wrapper to call down into ther kernel to allocate a new socket. One step further into the definition for `INLINE_SYSCALL` lands us at [sysdeps/unix/sysv/linux/x86_64/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sysdep.h;h=1ef0f742aefb849b234a3695c21f987a2926bd07;hb=HEAD#l193) which is a rather cumbersome set of recursive macro expansions. 
+And as we can see this is just a simple pass-through to a syscall wrapper to call down into their kernel to allocate a new socket. One step further into the definition for `INLINE_SYSCALL` lands us at [sysdeps/unix/sysv/linux/x86_64/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sysdep.h;h=1ef0f742aefb849b234a3695c21f987a2926bd07;hb=HEAD#l193) which is a rather cumbersome set of recursive macro expansions. 
 
 Rather than wade through the macro expansions, we can have `gcc` just expand them for us using the `gcc -E` function. We can write a simple little program `mysock.c` like so
 
@@ -241,7 +241,7 @@ int sock_create(int family, int type, int protocol, struct socket **res)
 	return __sock_create(current->nsproxy->net_ns, family, type, protocol, res, 0);
 }
 ```
-We see an additional piece of infromation being injected into the call chain, `current->nsproxy->net_ns`. Current is a pointer to the current [`task_struct`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/sched.h?h=v4.15.11#n520) from [arch/x86/include/asm/current.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/arch/x86/include/asm/current.h?h=v4.15.11#n18).
+We see an additional piece of information being injected into the call chain, `current->nsproxy->net_ns`. Current is a pointer to the current [`task_struct`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/sched.h?h=v4.15.11#n520) from [arch/x86/include/asm/current.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/arch/x86/include/asm/current.h?h=v4.15.11#n18).
 
 ```c
 struct task_struct {
@@ -395,7 +395,7 @@ struct net {
 } __randomize_layout;
 ```
 
-The socket is created through [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196), and its integer identifier returned back through the syscall chain. We'll go into more detail on what information is encapsulated into the sock struct later when it is required to understand packet routing inside the kernel. The part we will be most concerned with here is the struct member
+Using these data structures, the socket then is created through [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196), and its integer identifier returned back through the syscall chain. We'll go into more detail on what information is encapsulated into the sock struct later when it is required to understand packet routing inside the kernel. The part we will be most concerned with here is the struct member
 ```c
 struct netns_ipv4 ipv4;
 ```
@@ -404,7 +404,7 @@ The `netns_ipv4` struct is defined in [include/net//netns/ipv4](https://git.kern
 
 ### Shoving Muffin Through Socket
 
-The invocation of
+Now that we have a socket, let's shove our muffin through it. The invocation of
 
 ```c
 sendto(fd, message, sz, 0, server->ai_addr, sizeof(*server->ai_addr));
@@ -429,7 +429,7 @@ __libc_sendto (int fd, const void *buf, size_t len, int flags,
 }
 ```
 
-Followed by a pile of macros that ultimately brings us to the same place as the `socket` call, with one extra stop along the way in this case in `sysdep.h` to manage rentrancy issues.
+Followed by a pile of macros that ultimately brings us to the same place as the `socket` call, with one extra stop along the way in this case in `sysdep.h` to manage reentrancy issues.
 
 - [sysdep/unix/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysdep.h;h=aac93039de1ac5d7467c6924778192033d0a6aff;hb=HEAD)
 - [sysdeps/unix/sysv/linux/x86_64/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sysdep.h;h=1ef0f742aefb849b234a3695c21f987a2926bd07;hb=HEAD#l193)
@@ -492,7 +492,7 @@ int sock_sendmsg(struct socket *sock, struct msghdr *msg)
 
 #### Linux Security Module Plumbing
 
-Calls to sendmsg go through the [Linux Security Modules Framework (LSM)](https://en.wikipedia.org/wiki/Linux_Security_Modules). LSM allows security to be plugged into the kernel through the module mechanism. The code above basically says, call the security hook, if there is no error then send the message via `sock_sendmsg_nosec`. Digging a bit deeper into the hook, the path is fairly straight forward. `security_socket_sendmsg` is found at [security/security.c](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/security/security.c?h=v4.15.11#n1368)
+Calls to `sendmsg` go through the [Linux Security Modules Framework (LSM)](https://en.wikipedia.org/wiki/Linux_Security_Modules). LSM allows security to be plugged into the kernel through the module mechanism. The code above basically says, call the security hook first, and if there is no error then send the message via `sock_sendmsg_nosec`. Digging a bit deeper into the hook, the path is fairly straight forward. `security_socket_sendmsg` is found at [security/security.c](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/security/security.c?h=v4.15.11#n1368)
 
 ```c
 int security_socket_sendmsg(struct socket *sock, struct msghdr *msg, int size)
@@ -518,7 +518,7 @@ and `call_int_hook` also in [security/security.c](https://git.kernel.org/pub/scm
  RC;                                                        \
 })
 ```
-The `security_hook_heads` structure is defined in [include/linux/lsm_hooks.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/lsm_hooks.h?h=v4.15.11#n1732). Note that if the list referenced by the macro above is empty (no security module is loaded), and initial return code (`IRC`) is 0, then a 0 will be returned and the logic in the body of the `sock_sendmsg` function will go on it's merry way of sending the message. Alternatively, if there is a security module loaded then its hook will be called. If the hook returns an error it will be returned and the logic in `sock_sendmsg` will not actually send the message, it will just return the error code reported by the first module that gives an error. Note that each hook is a list, so multiple security modules can run side by side at the same time.
+The `security_hook_heads` structure is defined in [include/linux/lsm_hooks.h](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/lsm_hooks.h?h=v4.15.11#n1732). Note that if the list referenced by the macro above is empty (no security module is loaded), and initial return code (`IRC`) is 0, then a 0 will be returned and the logic in the body of the `sock_sendmsg` function will go on it's merry way of sending the message through `sock_sendmsg_nosec`. Alternatively, if there is a security module loaded then its hook will be called. If the hook returns an error it will be returned and the logic in `sock_sendmsg` will not actually send the message, it will just return the error code reported by the first module that gives an error. Note that each hook is a list, so multiple security modules can run side by side at the same time.
 
 If we had SELinux running, the security hook for `sock_sendmsg` would be [initialized](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/security/selinux/hooks.c?h=v4.15.11#n6550) 
 
@@ -554,7 +554,7 @@ The kernel is using the socket we created earlier with the socket syscall to sen
 - allocating a socket in the filesystem
 - _**initializing the socket according to it's specified protocol family**_
 
-We are going to have a look at the protocol initialization bits in order to understand what the `sock->ops->sendmsg` acutally maps to. Here are the interesting bits from [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196) we will be looking at. 
+We are going to have a look at the protocol initialization bits in order to understand what the `sock->ops->sendmsg` actually maps to. Here are the interesting bits from [`__sock_create`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/socket.c?h=v4.15.11#n1196) we will be looking at. 
 
 {{< highlight c "linenos=inline,linenostart=1252" >}}
   pf = rcu_dereference(net_families[family]);
@@ -634,7 +634,7 @@ and [registered](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-st
 
 ```
 
-in `net/ipv4/af_inet.c`. Sockets in this family are created through the [inet_create](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/af_inet.c?h=v4.15.11#n245) function that is mapped into the protocol family structure above. The first part of this function looks up the potocol within IPv4 being used putting the `answer` in a [proto struct](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/sock.h?h=v4.15.11#n1024).
+in `net/ipv4/af_inet.c`. Sockets in this family are created through the [inet_create](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/af_inet.c?h=v4.15.11#n245) function that is mapped into the protocol family structure above. The first part of this function looks up the protocol within IPv4 being used putting the `answer` in a [proto struct](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/sock.h?h=v4.15.11#n1024).
 
 ```c
 list_for_each_entry_rcu(answer, &inetsw[sock->type], list) {
@@ -699,7 +699,7 @@ static struct inet_protosw inetsw_array[] =
 ```
 
 
-Now we can see where the implemntatin of the `ops` structure referenced in the `sock_sendmsg_nosec` comes from in the case of IPv4. We used UDP in our sending userpsace application, so let's take a look at the [`inet_dgram_ops`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/af_inet.c?h=v4.15.11#n960) structure.
+Now we can see where the implementation of the `ops` structure referenced in the `sock_sendmsg_nosec` comes from in the case of IPv4. We used UDP in our sending userspace application, so let's take a look at the [`inet_dgram_ops`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/af_inet.c?h=v4.15.11#n960) structure.
 ```c
 const struct proto_ops inet_dgram_ops = {
 	.family		   = PF_INET,
@@ -898,7 +898,7 @@ struct rtable *ip_route_output_key_hash(struct net *net, struct flowi4 *fl4,
 }
 ```
 
-which is really just preparing arguments for [`ip_route_output_key_hash_rcu`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2311). In our muffin pushing client code, we are using a unicast address and have done nothing to tell the kernel as of yet, what interface the socket is associated with. So our starting point of interest in `ip_route_ouput_key_hash_rcu` is the `fib_lookup` at line 2411
+which is really just preparing arguments for [`ip_route_output_key_hash_rcu`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/route.c?h=v4.15.11#n2311). In our muffin pushing client code, we are using a unicast address and have done nothing to tell the kernel, as of yet, what interface the socket is associated with. So our starting point of interest in `ip_route_ouput_key_hash_rcu` is the `fib_lookup` at line 2411
 
 ```c
   err = fib_lookup(net, fl4, res, 0);
@@ -943,7 +943,7 @@ static inline int fib_lookup(struct net *net, const struct flowi4 *flp,
 }
 ```
 
-Lets take a look at a very simplified version of [`fib_get_table`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1296), note that all of the error handling and bactrace code has been removed from the code below. Only the parts necessary to understand the _normal_ case are shown so we can get an immideate picture of what is going on.
+Lets take a look at a **_very simplified_** version of [`fib_get_table`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1296), note that all of the error handling and backtrace code has been removed from the code below. Only the parts necessary to understand the **_normal_** case are shown so we can get an immediate picture of what is going on.
 
 {{< highlight c "linenos=inline" >}}
 int fib_table_lookup(struct fib_table *tb, const struct flowi4 *flp,
@@ -1005,11 +1005,11 @@ found:
 }
 {{</highlight>}}
 
-The first thing to notice here is that the FIB is accessed through a [trie](https://en.wikipedia.org/wiki/Trie), where interior nodes are destination address prefixes. The trie is extracted from the `fib_table` at line 4 and we initialize the key that is used to search the tree in line 5 as the destination address for the outbound packets. Next a reference to the first node in the vector of keys that comprisies the tree is created in line 14.
+The first thing to notice here is that the FIB is accessed through a [trie](https://en.wikipedia.org/wiki/Trie), where interior nodes are destination address prefixes. The trie is extracted from the `fib_table` at line 4 and we initialize the key that is used to search the tree in line 5 as the destination address for the outbound packets. Next, a reference to the first node in the vector of keys that comprises the trie is created in line 14.
 
-The loop at line 17 iterates through the trie based on the search key, jumping to the `found` label once a leaf node has been reached. Once we arrive at `found`, we iterate through the `fib_alias` entrys found at the leaf, until we find one that satisfies what we are looking for. There has been one check in this example preserved from the actual code at line 33. There are many more checks in play, consult the [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422) to see them all.
+The loop at line 17 iterates through the trie based on the destination-address search key, jumping to the `found` label once a leaf node has been reached. Once we arrive at `found`, we iterate through the `fib_alias` entries found at the leaf, until we find one that satisfies what we are looking for. There has been one check in this example preserved from the actual code at line 33. There are many more checks in play, consult the [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422) to see them all.
 
-Once we have our hands on `fib_alias` that passes the required checks, we iterate through it's next-hop entries at line 36. The `nh` in `fib_nh` [stands for next-hop](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_semantics.c?h=v4.15.11#n735). The next-hop entries are checked for a number of conditions (again massively simplified here, see [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422)). If the checks pass then we fill in the `res` result structure and return.
+Once we have our hands on a `fib_alias` that passes the required checks, we iterate through it's next-hop entries at line 36. The `nh` in `fib_nh` [stands for next-hop](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_semantics.c?h=v4.15.11#n735). The next-hop entries are checked for a number of conditions (again massively simplified here, see [actual code](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/fib_trie.c?h=v4.15.11#n1422)). If the checks pass then we fill in the `res` result structure and return.
 
 Note in particular that on line 50, the `fib_info` struct is assigned to the result via the `fi` struct member. We can now access the device associated to the outbound path through [`FIB_RES_DEV`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/net/ip_fib.h?h=v4.15.11#n183)
 
@@ -1018,7 +1018,7 @@ Note in particular that on line 50, the `fib_info` struct is assigned to the res
 #define FIB_RES_NH(res)    ((res).fi->fib_nh[(res).nh_sel])
 ```
 
-This gives us access to the [`net_device`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443) structure. This is a rather large structure that collects most things one would need to know about a network device in order to shove muffins through it. `FIB_RES_DEV` is used by the `ip_route_output_key_hash_rcu` function code above to get ahold of the output device. Poping back up the stack to that code, the next point of interest is [`fib_select_path`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443)
+This gives us access to the [`net_device`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443) structure. This is a rather large structure that collects most things one would need to know about a network device in order to shove muffins through it. `FIB_RES_DEV` is used by the `ip_route_output_key_hash_rcu` function code above to get a hold of the output device. Popping back up the stack to that code, the next point of interest is [`fib_select_path`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/include/linux/netdevice.h?h=v4.15.11#n1443)
 
 ```c
 void fib_select_path(struct net *net, struct fib_result *res,
@@ -1051,4 +1051,317 @@ This function decides which path to use from a list of `fib_alias` structures. T
 
 #### Transmission - Actually Shoving Muffins Through Socket
 
-Next a socket buffer is created to encapsulate the muffin via [`ip_make_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/ip_output.c?h=v4.15.11#n1457). Then the skb encapsulated muffin is ultimately shoved out the front door via [`udp_send_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n786).
+Next a socket buffer is created to encapsulate the muffin via [`ip_make_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/ip_output.c?h=v4.15.11#n1457). Then the skb encapsulated muffin is ultimately shoved out the front door via [`udp_send_skb`](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/net/ipv4/udp.c?h=v4.15.11#n786). However, there is quite a bit that happens in between `udp_send_skb` and the muffin actually going onto the network interface card (NIC). Starting from `udp_send_skb` this is the path our muffin will be taking through the kernel code to the NIC.
+
+| line | function call | definition | notes |
+| ---:|:--- |:--- | ---:|
+|`{{< krefl "net/ipv4/udp.c" 1051 >}}`|`udp_send_skb`                                       | {{< krefp "net/ipv4/udp.c" 786 >}} ||
+|`{{< krefl "net/ipv4/udp.c" 829 >}}`|`ip_send_skb`                                         | {{< krefp "net/ipv4/ip_output.c" 1410 >}}||
+|`{{< krefl "net/ipv4/ip_output.c" 1414 >}}`| `ip_local_out`                                | {{< krefp "net/ipv4/ip_output.c" 118 >}} ||
+|`{{< krefl "net/ipv4/ip_output.c" 122 >}}`| `__ip_local_out`                               | {{< krefp "net/ipv4/ip_output.c" 97 >}} ||
+|`{{< krefl "net/ipv4/ip_output.c" 113 >}}`| `nf_hook`                                      | {{< krefp "include/linux/netfilter.h" 182 >}} ||
+|`{{< krefl "include/linux/netfilter.h" 205 >}}`| `nf_hook_slow`                            | {{< krefp "net/netfilter/core.c" 460 >}} ||
+|`{{< krefl "net/netfilter/core.c" 478 >}}`| `nf_queue`                                     | {{< krefp "net/netfilter/nf_queue.c" 166 >}} ||
+|`{{< krefl "net/netfilter/nf_queue.c" 172 >}}`| `__nf_queue`                               | {{< krefp "net/netfilter/nf_queue.c" 114 >}} ||
+|`{{< krefl "net/netfilter/nf_queue.c" 151 >}}`| `qh->outfn`                                | {{< krefp "net/netfilter/nfnetlink_queue.c" 1234 >}} ||
+|`{{< krefl "net/netfilter/nfnetlink_queue.c" 787 >}}`| `__nfqnl_enqueue_packet`            | {{< krefp "net/netfilter/nfnetlink_queue.c" 632 >}} ||
+|`{{< krefl "net/netfilter/nfnetlink_queue.c" 665 >}}`| `nfnetlink_unicast`                 | {{< krefp "net/netfilter/nfnetlink.c" 143 >}} ||
+|`{{< krefl "net/netfilter/nfnetlink.c" 146 >}}`| `netlink_unicast`                         | {{< krefp "net/netlink/af_netlink.c" 1284 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 1316 >}}`| `netlink_sendskb`                         | {{< krefp "net/netlink/af_netlink.c" 1226 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 1228 >}}`| `__netlink_sendskb`                       | {{< krefp "net/netlink/af_netlink.c" 1215 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 1219 >}}`| `netlink_deliver_tap`                     | {{< krefp "net/netlink/af_netlink.c" 295 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 300 >}}`| `__netlink_deliver_tap`                    | {{< krefp "net/netlink/af_netlink.c" 280 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 289 >}}`| `__netlink_deliver_tap_skb`                | {{< krefp "net/netlink/af_netlink.c" 249 >}} ||
+|`{{< krefl "net/netlink/af_netlink.c" 271 >}}`| `dev_queue_xmit`                           | {{< krefp "net/core/dev.c" 3549 >}} ||
+|`{{< krefl "net/core/dev.c" 3551 >}}`| `__dev_queue_xmit`                                  | {{< krefp "net/core/dev.c" 3443 >}} ||
+|`{{< krefl "net/core/dev.c" 3486 >}}`| `__dev_xmit_skb`                                    | {{< krefp "net/core/dev.c" 3185 >}} ||
+|`{{< krefl "net/core/dev.c" 3518 >}}`| `dev_hard_start_xmit`                               | {{< krefp "net/core/dev.c" 3016 >}} | 1 |
+|`{{< krefl "net/core/dev.c" 3026 >}}`| `xmit_one`                                          | {{< krefp "net/core/dev.c" 2999 >}} ||
+|`{{< krefl "net/core/dev.c" 3010 >}}`| `netdev_start_xmit`                                 | {{< krefp "include/linux/netdevice.h" 4045 >}} ||
+|`{{< krefl "include/linux/netdevice.h" 4051 >}}`| `__netdev_start_xmit`                    | {{< krefp "include/linux/netdevice.h" 4037 >}} ||
+|`{{< krefl "include/linux/netdevice.h" 4042 >}}`| `ops->ndo_start_xmit`                    | {{< krefp "drivers/net/ethernet/intel/e1000/e1000_main.c" 854 >}} | 2 |
+|`{{< krefl "drivers/net/ethernet/intel/e1000/e1000_main.c" 854 >}}`| `e1000_xmit_frame`    | {{< krefp "drivers/net/ethernet/intel/e1000/e1000_main.c" 3125 >}} ||
+
+```
+1. chose the non queue-based path, queue based path starts at 3517
+2. chose e1000 device b/c that is what we are using in testing environment
+```
+
+As you can see from the trace above, the socket buffer traverses 5 major Linux kernel subsystems from the UDP subsystem to the NIC driver that ultimately launches the muffin out the front door.
+
+1. net/ipv4/udp
+2. [net/netfilter](https://www.netfilter.org/)
+3. [net/netlink](https://en.wikipedia.org/wiki/Netlink)
+4. net/core
+5. drivers/net/ethernet/intel/e1000
+
+Our originating `sendto` syscall landed us in the UDP subsystem. The `net/ipv4` subsystem uses netfilter as a means to deliver socket buffers to the appropriate output queues. Netfilter then notifies netlink of the queued up socket buffers which will call down into the core network subsystem to tell the NIC device transmit (xmit) the contents of the socket buffer. A pointer to the appropriate device is already resident in the socket buffer (`sk_buff`) from the information provided by the FIB table earlier. When the socket buffer arrives at the network core subsystem, all the core has to do is call `ndo_start_xmit` on the driver associated with the device and that driver will handle actually launching the muffin out the front door.
+
+Lets take a look at some of the code from the trace above, many interesting things are happening. Starting with `udp_send_skb`.
+
+```c
+static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4)
+{
+	struct sock *sk = skb->sk;
+	struct inet_sock *inet = inet_sk(sk);
+	struct udphdr *uh;
+	int err = 0;
+	int is_udplite = IS_UDPLITE(sk);
+	int offset = skb_transport_offset(skb);
+	int len = skb->len - offset;
+	__wsum csum = 0;
+
+	/*
+	 * Create a UDP header
+	 */
+	uh = udp_hdr(skb);
+	uh->source = inet->inet_sport;
+	uh->dest = fl4->fl4_dport;
+	uh->len = htons(len);
+	uh->check = 0;
+
+	if (is_udplite)  				 /*     UDP-Lite      */
+		csum = udplite_csum(skb);
+
+	else if (sk->sk_no_check_tx) {			 /* UDP csum off */
+
+		skb->ip_summed = CHECKSUM_NONE;
+		goto send;
+
+	} else if (skb->ip_summed == CHECKSUM_PARTIAL) { /* UDP hardware csum */
+
+		udp4_hwcsum(skb, fl4->saddr, fl4->daddr);
+		goto send;
+
+	} else
+		csum = udp_csum(skb);
+
+	/* add protocol-dependent pseudo-header */
+	uh->check = csum_tcpudp_magic(fl4->saddr, fl4->daddr, len,
+				      sk->sk_protocol, csum);
+	if (uh->check == 0)
+		uh->check = CSUM_MANGLED_0;
+
+send:
+	err = ip_send_skb(sock_net(sk), skb);
+	if (err) {
+		if (err == -ENOBUFS && !inet->recverr) {
+			UDP_INC_STATS(sock_net(sk),
+				      UDP_MIB_SNDBUFERRORS, is_udplite);
+			err = 0;
+		}
+	} else
+		UDP_INC_STATS(sock_net(sk),
+			      UDP_MIB_OUTDATAGRAMS, is_udplite);
+	return err;
+}
+
+```
+
+The primary thing that is happening here is the creation of the [UDP header](https://en.wikipedia.org/wiki/User_Datagram_Protocol#Packet_structure). Next we follow the `ip_send_skb` through the `nf_hook` call site in `__ip_local_out` (the intermediary steps are just plumbing).
+
+```c
+int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
+{
+	struct iphdr *iph = ip_hdr(skb);
+
+	iph->tot_len = htons(skb->len);
+	ip_send_check(iph);
+
+	/* if egress device is enslaved to an L3 master device pass the
+	 * skb to its handler for processing
+	 */
+	skb = l3mdev_ip_out(sk, skb);
+	if (unlikely(!skb))
+		return 0;
+
+	skb->protocol = htons(ETH_P_IP);
+
+	return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
+		       net, sk, skb, NULL, skb_dst(skb)->dev,
+		       dst_output);
+}
+```
+
+This is our transition from the UDP subsystem into netfilter. Our first interesting stop in netfilter is `__nf_queue`. This function gets a pointer to the queue handler that our muffin will be shoved into and calls the `outfn` on that queue with our socket buffer encapsulated muffin further encapsulated in a netfilter queue entry (`nf_queue_entry`).
+
+```c
+static int __nf_queue(struct sk_buff *skb, const struct nf_hook_state *state,
+		      const struct nf_hook_entries *entries,
+		      unsigned int index, unsigned int queuenum)
+{
+	int status = -ENOENT;
+	struct nf_queue_entry *entry = NULL;
+	const struct nf_afinfo *afinfo;
+	const struct nf_queue_handler *qh;
+	struct net *net = state->net;
+
+	/* QUEUE == DROP if no one is waiting, to be safe. */
+	qh = rcu_dereference(net->nf.queue_handler);
+	if (!qh) {
+		status = -ESRCH;
+		goto err;
+	}
+
+	afinfo = nf_get_afinfo(state->pf);
+	if (!afinfo)
+		goto err;
+
+	entry = kmalloc(sizeof(*entry) + afinfo->route_key_size, GFP_ATOMIC);
+	if (!entry) {
+		status = -ENOMEM;
+		goto err;
+	}
+
+	*entry = (struct nf_queue_entry) {
+		.skb	= skb,
+		.state	= *state,
+		.hook_index = index,
+		.size	= sizeof(*entry) + afinfo->route_key_size,
+	};
+
+	nf_queue_entry_get_refs(entry);
+	skb_dst_force(skb);
+	afinfo->saveroute(skb, entry);
+	status = qh->outfn(entry, queuenum);
+
+	if (status < 0) {
+		nf_queue_entry_release_refs(entry);
+		goto err;
+	}
+
+	return 0;
+
+err:
+	kfree(entry);
+	return status;
+}
+```
+
+Next we arrive at the boundary between netfilter and netlink in `__nfqnl_enqueue_packet`. For brevity the error handling portions of this code have been omitted, for the full version see the link in the trace table above.
+
+```c
+static int
+__nfqnl_enqueue_packet(struct net *net, struct nfqnl_instance *queue,
+			struct nf_queue_entry *entry)
+{
+	struct sk_buff *nskb;
+	int err = -ENOBUFS;
+	__be32 *packet_id_ptr;
+	int failopen = 0;
+
+	nskb = nfqnl_build_packet_message(net, queue, entry, &packet_id_ptr);
+	spin_lock_bh(&queue->lock);
+
+	entry->id = ++queue->id_sequence;
+	*packet_id_ptr = htonl(entry->id);
+
+	/* nfnetlink_unicast will either free the nskb or add it to a socket */
+	err = nfnetlink_unicast(nskb, net, queue->peer_portid, MSG_DONTWAIT);
+
+	__enqueue_entry(queue, entry);
+
+	spin_unlock_bh(&queue->lock);
+	return 0;
+
+err_out_free_nskb:
+	kfree_skb(nskb);
+err_out_unlock:
+	spin_unlock_bh(&queue->lock);
+err_out:
+	return err;
+}
+```
+
+The first point of interest in the netlink subsystem is where netlink decides what tap devices to send the socket buffer to. This is a two phase process. The first phase is a sort of tap-broadcast phase there `__netlink_deliver_tap` simply attempts to deliver the socket buffer to all taps.
+
+```c
+static void __netlink_deliver_tap(struct sk_buff *skb)
+{
+	int ret;
+	struct netlink_tap *tmp;
+
+	if (!netlink_filter_tap(skb))
+		return;
+
+	list_for_each_entry_rcu(tmp, &netlink_tap_all, list) {
+		ret = __netlink_deliver_tap_skb(skb, tmp->dev);
+		if (unlikely(ret))
+			break;
+	}
+}
+```
+
+The next phase determines whether the tap device should actually handle the socket buffer and if so transmits it on that device. This is also the boundary between netlink and the kernel core network code. Once we call `dev_queue_xmit` we are back in the kernel core.
+
+```c
+static int __netlink_deliver_tap_skb(struct sk_buff *skb,
+				     struct net_device *dev)
+{
+	struct sk_buff *nskb;
+	struct sock *sk = skb->sk;
+	int ret = -ENOMEM;
+
+	if (!net_eq(dev_net(dev), sock_net(sk)))
+		return 0;
+
+	dev_hold(dev);
+
+	if (is_vmalloc_addr(skb->head))
+		nskb = netlink_to_full_skb(skb, GFP_ATOMIC);
+	else
+		nskb = skb_clone(skb, GFP_ATOMIC);
+	if (nskb) {
+		nskb->dev = dev;
+		nskb->protocol = htons((u16) sk->sk_protocol);
+		nskb->pkt_type = netlink_is_kernel(sk) ?
+				 PACKET_KERNEL : PACKET_USER;
+		skb_reset_network_header(nskb);
+		ret = dev_queue_xmit(nskb);
+		if (unlikely(ret > 0))
+			ret = net_xmit_errno(ret);
+	}
+
+	dev_put(dev);
+	return ret;
+}
+```
+
+In the core kernel network code that follows, the decision is made whether or not this device has an actual queue to shove the hyper-encapsulated muffin into or if we shall just transmit to the device directly. In this article we assume the direct transmission path (you can fully follow this logic in the `__dev_queue_xmit` and `dev_xmit_skb` function pointers above). Assuming the direct device call path we land at `__netdev_start_xmit`.
+
+```c
+static inline netdev_tx_t __netdev_start_xmit(const struct net_device_ops *ops,
+					      struct sk_buff *skb, struct net_device *dev,
+					      bool more)
+{
+	skb->xmit_more = more ? 1 : 0;
+	return ops->ndo_start_xmit(skb, dev);
+}
+```
+
+This is the boundary between the core kernel network subsystem and the device driver that will be actually sending our muffin into hyperspace. The device was extracted from the socket buffer in `_def_queue_xmit` earlier. Recall that the information that defines where the socket buffer was computed using the FIB code much earlier. In particular line {{<krefl "net/ipv4/udp.c" 1019>}} in `net/ipv4/udp.c` in the `udp_sendmsg` function collected the kernels internal routing/forwarding information and used that information in line {{<krefl "net/ipv4/udp.c" 1046>}} to create the socket buffer with the appropriate device information.
+
+In our case we are testing on a virtual machine inside [qemu](https://qemu.org) that uses a driver that emulates the [intel e1000](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux-stable.git/tree/drivers/net/ethernet/intel/e1000?h=v4.15.11) NIC. So the call to `ndo_start_xmit` lands us in the device operations for the Intel e1000 NIC.
+
+```c
+static const struct net_device_ops e1000_netdev_ops = {
+	.ndo_open		= e1000_open,
+	.ndo_stop		= e1000_close,
+	.ndo_start_xmit		= e1000_xmit_frame,
+	.ndo_set_rx_mode	= e1000_set_rx_mode,
+	.ndo_set_mac_address	= e1000_set_mac,
+	.ndo_tx_timeout		= e1000_tx_timeout,
+	.ndo_change_mtu		= e1000_change_mtu,
+	.ndo_do_ioctl		= e1000_ioctl,
+	.ndo_validate_addr	= eth_validate_addr,
+	.ndo_vlan_rx_add_vid	= e1000_vlan_rx_add_vid,
+	.ndo_vlan_rx_kill_vid	= e1000_vlan_rx_kill_vid,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller	= e1000_netpoll,
+#endif
+	.ndo_fix_features	= e1000_fix_features,
+	.ndo_set_features	= e1000_set_features,
+};
+```
+
+where the `ndo_start_xmit` function pointer which maps to {{<krefp "drivers/net/ethernet/intel/e1000/e1000_main.c" 3124>}}. The muffin has been successfully delivered from the core kernel to the network device driver responsible for transmitting it to its next hop. In the next article I will cover the device driver code that actually transmits the muffin!

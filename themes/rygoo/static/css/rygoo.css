@@ -51,3 +51,7 @@ a:visited {
   margin-top: 20px;
 }
 
+th, td {
+  padding-left: 15px;
+}
+
