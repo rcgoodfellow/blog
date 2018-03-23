@@ -6,7 +6,9 @@ series: lni
 categories: Linux Network Internals
 ---
 
-This post is a first in a series about Linux networking internals. The goal is very simple, send the string "muffin" from one machine to another, tracing its path from the source user space program, down through the source computers network stack, across a whitebox switch running Cumulus Linux, back up the network stack of the receiving computer and finally to its destination in the receiving user space program.
+This post is a first in a series about Linux networking internals. The goal for the first part of this series is very simple, send the string "muffin" from one machine to another, tracing its path from the source user space program, down through the source computers network stack, across a whitebox switch running Cumulus Linux, back up the network stack of the receiving computer and finally to its destination in the receiving user space program.
+
+It turns out this will take several articles to cover. In this first article we trace the path of the muffin from the originating user space program all the way until it is delivered to the network device driver responsible for physically transporting the muffins bit signal to the next hop.
 
 ## User Space Program
 We begin our journey with the userspace program. This program essentially does three things
