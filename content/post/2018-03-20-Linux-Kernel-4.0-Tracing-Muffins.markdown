@@ -87,7 +87,7 @@ int __socket (int fd, int type, int domain)
 }
 ```
 
-And as we can see this is just a simple pass-through to a syscall wrapper to call down into their kernel to allocate a new socket. One step further into the definition for `INLINE_SYSCALL` lands us at [sysdeps/unix/sysv/linux/x86_64/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sysdep.h;h=1ef0f742aefb849b234a3695c21f987a2926bd07;hb=HEAD#l193) which is a rather cumbersome set of recursive macro expansions. 
+And as we can see this is just a simple pass-through to a syscall wrapper to call down into the kernel to allocate a new socket. One step further into the definition for `INLINE_SYSCALL` lands us at [sysdeps/unix/sysv/linux/x86_64/sysdep.h](https://sourceware.org/git/?p=glibc.git;a=blob;f=sysdeps/unix/sysv/linux/x86_64/sysdep.h;h=1ef0f742aefb849b234a3695c21f987a2926bd07;hb=HEAD#l193) which is a rather cumbersome set of recursive macro expansions. 
 
 Rather than wade through the macro expansions, we can have `gcc` just expand them for us using the `gcc -E` function. We can write a simple little program `mysock.c` like so
 
