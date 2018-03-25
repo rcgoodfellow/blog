@@ -38,44 +38,56 @@
 My current work requires me to understand quite a bit about Linux kernel networking subsystems. Most of the documentation on Linux networking internals is quite out of date. This is an effort to share an updated account of this part of the kernel.
 <br/><br/>
 {{ range .Site.Taxonomies.series.lni}}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
-</div>
+<table>
+  <tr>
+    <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+    <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+  </tr>
+</table>
 {{ end }}
-<h2>General Networking</h2>
+<h2>Emulation Technology</h2>
+{{ range .Site.Taxonomies.series.emu}}
+<table>
+  <tr>
+    <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+    <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+  </tr>
+</table>
+<h2>Systems Programming, Networking & Programming Languages </h2>
+<table>
+{{ end }}
 {{ range .Site.Taxonomies.series.networking }}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
-</div>
+<tr>
+  <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+  <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+</tr>
 {{ end }}
-<h2>Systems Programming</h2>
 {{ range .Site.Taxonomies.series.sysprog }}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
-</div>
+<tr>
+  <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+  <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+</tr>
 {{ end }}
-<h2>Testbeds</h2>
 {{ range .Site.Taxonomies.series.testbed }}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
-</div>
+<tr>
+  <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+  <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+</tr>
 {{ end }}
-<h2>Languages</h2>
 {{ range .Site.Taxonomies.series.language }}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
-</div>
+<tr>
+  <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+  <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+</tr>
 {{ end }}
+</table>
 <h2>Differential-Algebraic Equations</h2>
 {{ range .Site.Taxonomies.series.dae }}
-<div>
-  <span class="date">{{ .Date.Format "02 Jan 2006" }}</span> 
-  <span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span>
+<table>
+  <tr>
+    <td><span class="date">{{ .Date.Format "02 Jan 2006" }}</span></td>
+    <td><span class="title"><a href="{{ .Permalink }}">{{ .Title }}</a></span></td>
+  </tr>
 </div>
 {{ end }}
 

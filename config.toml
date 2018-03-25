@@ -6,5 +6,8 @@ MetaDataFormat = "toml"
 pygmentsCodeFences = true
 pygmentsStyle = "manni"
 
+[blackfriday]
+  hrefTargetBlank = true
+
 [taxonomies]
   series = "series"

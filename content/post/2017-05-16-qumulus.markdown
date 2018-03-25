@@ -1,5 +1,5 @@
 ---
-title: "Qumulus - Controlling VLANs on Cumulus with QBridge, AgentX and Netlink"
+title: "Cumulus VLAN Control through QBridge, AgentX and Netlink"
 date: 2017-05-16T18:00:00
 disqusid: 1948
 series: networking

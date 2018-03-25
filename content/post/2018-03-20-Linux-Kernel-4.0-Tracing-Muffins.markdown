@@ -1,7 +1,7 @@
 ---
 title: "Tracing Muffins: Part 1 Sending"
 date: 2018-03-20T10:47:00
-disqusid: 1947
+disqusid: 1953
 series: lni
 categories: Linux Network Internals
 ---
