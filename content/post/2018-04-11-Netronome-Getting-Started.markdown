@@ -1,6 +1,6 @@
 ---
 title: "Getting Started with Netronome on Linux"
-date: 2018-03-25T10:47:00
+date: 2018-04-11T10:47:00
 disqusid: 1955
 series: networking
 categories: Networking
