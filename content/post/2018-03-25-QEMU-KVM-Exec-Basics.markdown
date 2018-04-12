@@ -53,7 +53,7 @@ define DEFINE_PC_MACHINE(suffix, namestr, initfn, optsfn)                   \
 
 So we can see here that the init function for the i440fx is synthesized on the fly at compile time by the macro, but the real work is done by the `pc_init1` function within the synthesized function. 
 
-## VCPU Initialization
+## vCPU Initialization
 Our first point of focus in the `pc_init1` function will be the [call](https://git.qemu.org/?p=qemu.git;a=blob;f=hw/i386/pc_piix.c;h=5e47528993c9dfbc930857abac667d1475ccb615;hb=refs/heads/stable-2.11#l151) to [`pc_cpus_init`](https://git.qemu.org/?p=qemu.git;a=blob;f=hw/i386/pc.c;h=186545d2a4e56d874eebb542bf61bb5f59618e36;hb=refs/heads/stable-2.11#l1133)
 
 ```c
@@ -72,7 +72,7 @@ void pc_cpus_init(PCMachineState *pcms)
   }
 }
 ```
-Here we can see the machine initialization code, reading the smp topology information provided by the user (either explicitly through the `-smp` argument of `qemu-system` or implicitly through defaults) to create the correct number of virtual cpus (VCPU). The [`pc_new_cpu`](https://git.qemu.org/?p=qemu.git;a=blob;f=hw/i386/pc.c;h=186545d2a4e56d874eebb542bf61bb5f59618e36;hb=refs/heads/stable-2.11#l1094) follows
+Here we can see the machine initialization code, reading the smp topology information provided by the user (either explicitly through the `-smp` argument of `qemu-system` or implicitly through defaults) to create the correct number of virtual cpus (vCPU). The [`pc_new_cpu`](https://git.qemu.org/?p=qemu.git;a=blob;f=hw/i386/pc.c;h=186545d2a4e56d874eebb542bf61bb5f59618e36;hb=refs/heads/stable-2.11#l1094) follows
 
 ```c
 static void pc_new_cpu(const char *typename, int64_t apic_id, Error **errp)
@@ -201,9 +201,9 @@ static void x86_cpu_common_class_init(ObjectClass *oc, void *data)
 }
 {{</highlight>}}
 
-Here we can see that the device class `realize` function points to `x86_cpu_realizefn`. Through this `x86_cpu_realizefn`, we take a look at how VCPUs are actually created. QEMU can implement the VCPUs in many ways. On Linux systems with processors that support hardware virtualization (the vast majority of processors found in workstations and servers these days) the common choice is [KVM](https://www.linux-kvm.org). KVM is a Linux kernel module that provides, among other things, highly efficient VCPUs for virtual machines that take advantage instructions in modern processors specifically designed to support efficient virtualization. KVM is the mechanism we will be looking at here.
+Here we can see that the device class `realize` function points to `x86_cpu_realizefn`. Through this `x86_cpu_realizefn`, we take a look at how vCPUs are actually created. QEMU can implement the vCPUs in many ways. On Linux systems with processors that support hardware virtualization (the vast majority of processors found in workstations and servers these days) the common choice is [KVM](https://www.linux-kvm.org). KVM is a Linux kernel module that provides, among other things, highly efficient vCPUs for virtual machines that take advantage instructions in modern processors specifically designed to support efficient virtualization. KVM is the mechanism we will be looking at here.
 
-The code path that creates a KVM VCPU from QEMU is the following.
+The code path that creates a KVM vCPU from QEMU is the following.
 
 <pre>
 | target/i386/cpu.c          | {{<qreff "target/i386/cpu.c" 4054 "x86_cpu_realizefn">}}
@@ -220,3 +220,5 @@ The code path that creates a KVM VCPU from QEMU is the following.
 |   ---cpus.c                | {{<qreff "cpus.c" 1134 "cpu_can_run">}}
 </pre>
 
+## Crossing into KVM
+**This article is a work in progress, next up I will cover the QEMU/KVM interaction through vCPUs and vmrun**
