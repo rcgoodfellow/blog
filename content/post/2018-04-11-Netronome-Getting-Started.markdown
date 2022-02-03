@@ -115,6 +115,6 @@ sudo dnf install nfp-sdk-<version>.rpm
 This will also install things into `/opt/netronome`, notably the compiler `nfcc` is now in `/opt/netronome/bin` along with a host of other development tools.
 
 ## Run Hello World
-Your system should now be sufficiently set up to run [this hello world exercise](https://github.com/open-nfpsw/c_packetprocessing/tree/master/apps/lab4_cli).
+Your system should now be sufficiently set up to run [this hello world exercise](https://gitlab.com/rygoo/c_packetprocessing/tree/master/apps/lab4_cli).
 
 ### glhf
